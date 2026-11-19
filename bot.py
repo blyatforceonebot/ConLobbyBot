@@ -192,7 +192,15 @@ async def lobby(interaction: discord.Interaction, game_id: str):
     file = discord.File(fp=image_buf, filename=f"lobby_{clean_id}.png")
     await interaction.followup.send(file=file)
 
+import time
+
 if __name__ == "__main__":
     threading.Thread(target=run_web, daemon=True).start()
-    client.run(TOKEN)
+    while True:
+        try:
+            client.run(TOKEN)
+        except Exception as e:
+            print(f"Fout bij verbinden, probeer opnieuw over 30s: {e}")
+            time.sleep(30)
+
 
