@@ -1,6 +1,7 @@
 import os
 import io
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 import discord
 from discord import app_commands
@@ -20,6 +21,8 @@ def run_web():
 
 # --- 2. DISCORD BOT INSTELLINGEN ---
 TOKEN = os.environ.get("DISCORD_TOKEN")
+CON_USER_ID = os.environ.get("CON_USER_ID", "")
+CON_USER_AUTH = os.environ.get("CON_USER_AUTH", "")
 
 class MyClient(discord.Client):
     def __init__(self):
@@ -32,9 +35,9 @@ class MyClient(discord.Client):
 
 client = MyClient()
 
-# --- 3. DATA OPHALEN VAN CONFLICT OF NATIONS ---
-def fetch_lobby_data(game_id: str):
-    servers = [f"congs{i}.c.bytro.com" for i in range(1, 25)]
+# --- 3. DATA OPHALEN (ALLE SERVERS TEGELIJK IN 2 SECONDEN) ---
+def check_single_server(server: str, game_id: int):
+    url = f"https://{server}/"
     payload = {
         "@c": "ultshared.action.UltUpdateGameStateAction",
         "requestID": 1,
@@ -43,53 +46,74 @@ def fetch_lobby_data(game_id: str):
         "stateID": "0",
         "version": 382,
         "client": "con-client-mobile-portrait",
-        "gameID": int(game_id)
+        "gameID": game_id
     }
-    
-    for server in servers:
-        url = f"https://{server}/"
-        try:
-            resp = requests.post(url, json=payload, timeout=2)
-            if resp.status_code == 200 and "result" in resp.text:
-                data = resp.json()
-                return parse_players(data, game_id)
-        except Exception:
-            continue
+    if CON_USER_ID and CON_USER_AUTH:
+        payload["siteUserID"] = int(CON_USER_ID)
+        payload["userAuth"] = CON_USER_AUTH
+        payload["rights"] = "chat"
+
+    headers = {
+        "Content-Type": "application/json",
+        "Origin": "https://conflictnations.com",
+        "Referer": "https://conflictnations.com/"
+    }
+
+    try:
+        resp = requests.post(url, json=payload, headers=headers, timeout=4)
+        if resp.status_code == 200 and "players" in resp.text:
+            return resp.json()
+    except Exception:
+        pass
     return None
 
-def parse_players(data, game_id):
+def fetch_lobby_data(game_id: str):
+    gid = int(game_id)
+    servers = [f"congs{i}.c.bytro.com" for i in range(1, 25)]
+    
+    with ThreadPoolExecutor(max_workers=24) as executor:
+        futures = {executor.submit(check_single_server, srv, gid): srv for srv in servers}
+        for future in as_completed(futures):
+            data = future.result()
+            if data:
+                return parse_players(data)
+    return None
+
+def parse_players(data):
     players = []
     try:
         states = data.get("result", {}).get("states", {})
-        player_state = states.get("1", {}) or states.get("9", {})
-        raw_players = player_state.get("players", {})
-        
-        for pid, p in raw_players.items():
-            if not isinstance(p, dict) or p.get("computer", False):
-                continue
-            name = p.get("name", "Unknown")
-            if not name or name == "Unknown":
-                continue
-            alliance = p.get("allianceName", "") or ""
-            kd = p.get("kdRatio", 0.0)
-            winrate = p.get("winRate", 0)
-            level = p.get("level", 1)
-            sc = "Yes" if p.get("securityCouncil", False) else "No"
-            joined = p.get("gamesJoined", 0)
-            solo = p.get("soloWins", 0)
-            coalition = p.get("coalitionWins", 0)
-            
-            players.append({
-                "alliance": alliance[:25],
-                "name": name[:20],
-                "kd": float(kd),
-                "winrate": int(winrate),
-                "level": int(level),
-                "sc": sc,
-                "joined": int(joined),
-                "solo": int(solo),
-                "coalition": int(coalition)
-            })
+        for state_key, state_val in states.items():
+            if isinstance(state_val, dict) and "players" in state_val:
+                raw_players = state_val["players"]
+                for pid, p in raw_players.items():
+                    if not isinstance(p, dict) or p.get("computer", False):
+                        continue
+                    name = p.get("name", "")
+                    if not name or name == "Unknown":
+                        continue
+                    alliance = p.get("allianceName", "") or ""
+                    kd = p.get("kdRatio", 0.0)
+                    winrate = p.get("winRate", 0)
+                    level = p.get("level", 1)
+                    sc = "Yes" if p.get("securityCouncil", False) else "No"
+                    joined = p.get("gamesJoined", 0)
+                    solo = p.get("soloWins", 0)
+                    coalition = p.get("coalitionWins", 0)
+                    
+                    players.append({
+                        "alliance": str(alliance)[:25],
+                        "name": str(name)[:20],
+                        "kd": float(kd),
+                        "winrate": int(winrate),
+                        "level": int(level),
+                        "sc": sc,
+                        "joined": int(joined),
+                        "solo": int(solo),
+                        "coalition": int(coalition)
+                    })
+                if players:
+                    break
     except Exception:
         pass
     
@@ -159,8 +183,8 @@ async def lobby(interaction: discord.Interaction, game_id: str):
     players = fetch_lobby_data(clean_id)
     if not players:
         await interaction.followup.send(
-            f"Kon geen publieke lobby-data vinden voor Game ID `{clean_id}`. "
-            "Controleer of het ID klopt of dat de server extra authenticatie vereist."
+            f"Kon geen lobby-data ophalen voor Game ID `{clean_id}`. "
+            "Waarschijnlijk zijn `CON_USER_ID` en `CON_USER_AUTH` nodig op Render."
         )
         return
 
@@ -171,3 +195,4 @@ async def lobby(interaction: discord.Interaction, game_id: str):
 if __name__ == "__main__":
     threading.Thread(target=run_web, daemon=True).start()
     client.run(TOKEN)
+
