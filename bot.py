@@ -1,13 +1,27 @@
+import os
 import io
 import time
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 import discord
 from discord import app_commands
 from PIL import Image, ImageDraw, ImageFont
+from flask import Flask
 
-# --- 1. JOUW DISCORD BOT TOKEN ---
-TOKEN = "MTU3MzAzODcyODQ4MDMwMTE4OA." + "GD__Y8.ecMWtY8YqI2EFRurttgUsmn7HQrM2Snv2b2q60"
+# --- 1. WEB SERVER VOOR RENDER ---
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "ConWW3 Bot is online!"
+
+def run_web():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
+
+# --- 2. DISCORD BOT INSTELLINGEN ---
+TOKEN = os.environ.get("DISCORD_TOKEN")
 
 class MyClient(discord.Client):
     def __init__(self):
@@ -20,7 +34,7 @@ class MyClient(discord.Client):
 
 client = MyClient()
 
-# --- 2. DATA OPHALEN VAN CONFLICT OF NATIONS ---
+# --- 3. DATA OPHALEN VAN CONFLICT OF NATIONS ---
 def check_single_server(server: str, game_id: int):
     url = f"https://{server}/"
     payload = {
@@ -97,7 +111,7 @@ def parse_players(data):
     players.sort(key=lambda x: x["kd"], reverse=True)
     return players
 
-# --- 3. TABEL AFBEELDING TEKENEN ---
+# --- 4. TABEL AFBEELDING TEKENEN ---
 def create_lobby_image(game_id: str, players: list):
     row_height = 28
     header_height = 110
@@ -147,7 +161,7 @@ def create_lobby_image(game_id: str, players: list):
     buf.seek(0)
     return buf
 
-# --- 4. SLASH COMMAND IN DISCORD ---
+# --- 5. SLASH COMMAND IN DISCORD ---
 @client.tree.command(name="lobby", description="Haal de spelerslijst en stats op van een CoN WW3 Game ID")
 @app_commands.describe(game_id="Het nummer van de game (bijv. 10958625)")
 async def lobby(interaction: discord.Interaction, game_id: str):
@@ -170,12 +184,14 @@ async def lobby(interaction: discord.Interaction, game_id: str):
     await interaction.followup.send(file=file)
 
 if __name__ == "__main__":
+    threading.Thread(target=run_web, daemon=True).start()
     while True:
         try:
             client.run(TOKEN)
         except Exception as e:
-            print(f"Fout bij verbinden, probeer opnieuw over 15s: {e}")
-            time.sleep(15)
+            print(f"Fout bij verbinden, probeer opnieuw over 30s: {e}")
+            time.sleep(30)
+
 
 
 
