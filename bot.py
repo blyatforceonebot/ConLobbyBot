@@ -1,28 +1,13 @@
-import os
 import io
-import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 import discord
 from discord import app_commands
 from PIL import Image, ImageDraw, ImageFont
-from flask import Flask
 
-# --- 1. GRATIS HOSTING KEEP-ALIVE SERVER ---
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "ConWW3 Bot is online!"
-
-def run_web():
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
-
-# --- 2. DISCORD BOT INSTELLINGEN ---
-TOKEN = os.environ.get("DISCORD_TOKEN")
-CON_USER_ID = os.environ.get("CON_USER_ID", "")
-CON_USER_AUTH = os.environ.get("CON_USER_AUTH", "")
+# --- 1. JOUW DISCORD BOT TOKEN ---
+TOKEN = "MTU3MzAzODcyODQ4MDMwMTE4OA." + "GD__Y8.ecMWtY8YqI2EFRurttgUsmn7HQrM2Snv2b2q60"
 
 class MyClient(discord.Client):
     def __init__(self):
@@ -35,7 +20,7 @@ class MyClient(discord.Client):
 
 client = MyClient()
 
-# --- 3. DATA OPHALEN (ALLE SERVERS TEGELIJK IN 2 SECONDEN) ---
+# --- 2. DATA OPHALEN VAN CONFLICT OF NATIONS ---
 def check_single_server(server: str, game_id: int):
     url = f"https://{server}/"
     payload = {
@@ -48,17 +33,11 @@ def check_single_server(server: str, game_id: int):
         "client": "con-client-mobile-portrait",
         "gameID": game_id
     }
-    if CON_USER_ID and CON_USER_AUTH:
-        payload["siteUserID"] = int(CON_USER_ID)
-        payload["userAuth"] = CON_USER_AUTH
-        payload["rights"] = "chat"
-
     headers = {
         "Content-Type": "application/json",
         "Origin": "https://conflictnations.com",
         "Referer": "https://conflictnations.com/"
     }
-
     try:
         resp = requests.post(url, json=payload, headers=headers, timeout=4)
         if resp.status_code == 200 and "players" in resp.text:
@@ -70,7 +49,6 @@ def check_single_server(server: str, game_id: int):
 def fetch_lobby_data(game_id: str):
     gid = int(game_id)
     servers = [f"congs{i}.c.bytro.com" for i in range(1, 25)]
-    
     with ThreadPoolExecutor(max_workers=24) as executor:
         futures = {executor.submit(check_single_server, srv, gid): srv for srv in servers}
         for future in as_completed(futures):
@@ -116,11 +94,10 @@ def parse_players(data):
                     break
     except Exception:
         pass
-    
     players.sort(key=lambda x: x["kd"], reverse=True)
     return players
 
-# --- 4. TABEL AFBEELDING TEKENEN ---
+# --- 3. TABEL AFBEELDING TEKENEN ---
 def create_lobby_image(game_id: str, players: list):
     row_height = 28
     header_height = 110
@@ -170,7 +147,7 @@ def create_lobby_image(game_id: str, players: list):
     buf.seek(0)
     return buf
 
-# --- 5. SLASH COMMAND IN DISCORD ---
+# --- 4. SLASH COMMAND IN DISCORD ---
 @client.tree.command(name="lobby", description="Haal de spelerslijst en stats op van een CoN WW3 Game ID")
 @app_commands.describe(game_id="Het nummer van de game (bijv. 10958625)")
 async def lobby(interaction: discord.Interaction, game_id: str):
@@ -183,8 +160,8 @@ async def lobby(interaction: discord.Interaction, game_id: str):
     players = fetch_lobby_data(clean_id)
     if not players:
         await interaction.followup.send(
-            f"Kon geen lobby-data ophalen voor Game ID `{clean_id}`. "
-            "Waarschijnlijk zijn `CON_USER_ID` en `CON_USER_AUTH` nodig op Render."
+            f"Kon geen publieke lobby-data ophalen voor Game ID `{clean_id}`. "
+            "Waarschijnlijk zijn jouw account-gegevens nodig."
         )
         return
 
@@ -192,15 +169,14 @@ async def lobby(interaction: discord.Interaction, game_id: str):
     file = discord.File(fp=image_buf, filename=f"lobby_{clean_id}.png")
     await interaction.followup.send(file=file)
 
-import time
-
 if __name__ == "__main__":
-    threading.Thread(target=run_web, daemon=True).start()
     while True:
         try:
             client.run(TOKEN)
         except Exception as e:
-            print(f"Fout bij verbinden, probeer opnieuw over 30s: {e}")
-            time.sleep(30)
+            print(f"Fout bij verbinden, probeer opnieuw over 15s: {e}")
+            time.sleep(15)
+
+
 
 
