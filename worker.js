@@ -56,16 +56,6 @@ async function loginBytro(env) {
   const pass = env?.CON_PASS || DEFAULT_CON_PASS;
   const attempts = Array.of(
     {
-      url: "https://conflictnations.com",
-      ct: "application/x-www-form-urlencoded",
-      body: new URLSearchParams({ user: user, pass: pass, username: user, password: pass }).toString()
-    },
-    {
-      url: "https://conflictnations.com",
-      ct: "application/x-www-form-urlencoded",
-      body: new URLSearchParams({ user: user, pass: pass, titleID: "2008", language: "en" }).toString()
-    },
-    {
       url: "https://bytro.com",
       ct: "application/json",
       body: JSON.stringify({
@@ -77,6 +67,11 @@ async function loginBytro(env) {
         "language": "en",
         "version": 420
       })
+    },
+    {
+      url: "https://conflictnations.com",
+      ct: "application/x-www-form-urlencoded",
+      body: new URLSearchParams({ user: user, pass: pass, titleID: "2008", language: "en" }).toString()
     }
   );
   let info = "";
@@ -98,12 +93,12 @@ async function loginBytro(env) {
       if (uid && auth) {
         return { siteUserID: Number(uid.at(1)), userAuth: auth.at(1), version: 420 };
       }
-      info += resp.status + ":" + text.replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim().slice(0, 14) + "|";
+      info += resp.status + ":" + text.replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim().slice(0, 22) + "|";
     } catch (e) {
       info += "ERR|";
     }
   }
-  return { error: info.slice(0, 32) || "FAIL" };
+  return { error: info.slice(0, 42) || "FAIL" };
 }
 async function checkServer(serverNum, gameId, session) {
   const validSession = session && session.siteUserID ? session : null;
@@ -436,6 +431,7 @@ export default {
     return new Response("Unknown command", { status: 400 });
   }
 };
+
 
 
 
