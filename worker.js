@@ -37,6 +37,18 @@ async function sendDiscordText(appId, token, content) {
   });
 }
 
+async function sendDiscordImage(appId, token, caption, pngBytes) {
+  const path = Array.of("api", "v10", "webhooks", appId, token, "messages", "@original").join("/");
+  const form = new FormData();
+  form.append("payload_json", JSON.stringify({ content: caption }));
+  form.append("files[0]", new Blob([pngBytes], { type: "image/png" }), "lobby.png");
+  await fetch(new URL(path, "https://discord.com").toString(), {
+    method: "PATCH",
+    headers: { "User-Agent": "DiscordBot (https://workers.dev, 1.0)" },
+    body: form
+  });
+}
+
 async function loginBytro(env) {
   if (!env.CON_USER || !env.CON_PASS) return { error: "NO_ENV" };
   const endpoints = [
@@ -69,9 +81,9 @@ async function loginBytro(env) {
       const verMatch = text.match(/"?(?:version|clientVersion)"?\s*[:=]\s*"?(\d{3,6})"?/i);
       if (uidMatch && authMatch) {
         return {
-          siteUserID: Number(uidMatch),
-          userAuth: authMatch,
-          version: verMatch ? Number(verMatch) : 420
+          siteUserID: Number(uidMatch[1]),
+          userAuth: authMatch[1],
+          version: verMatch ? Number(verMatch[1]) : 420
         };
       }
     } catch (e) {
@@ -237,8 +249,8 @@ async function fetchAndRespond(appId, token, gameId, env) {
     const statsMap = await fetchUserDetailsBatch(found.serverNum, gameId, uids, session);
 
     const authStatus = session && session.siteUserID ? "Auth:OK" : ("Auth:Fail(" + (session?.error || "?") + ")");
-    let textOut = "**CON LOBBY " + gameId + " (S" + found.serverNum + " | " + players.length + " Active | " + authStatus + ")**\n```\n";
-    textOut += "#  Player     Nat   VP Tm  K/D  Win% Lv SC\n";
+    let textOut = "**BlyatForceOne | LOBBY " + gameId + " (S" + found.serverNum + " | " + players.length + " Active | " + authStatus + ")**\n```\n";
+    textOut += "#  Player    Nat   VP Tm  K/D  Win% Lv SC\n";
 
     for (let i = 0; i < players.length; i++) {
       const p = players.at(i);
@@ -247,7 +259,7 @@ async function fetchAndRespond(appId, token, gameId, env) {
       const nationShort = (p.nation || "").slice(0, 5).padEnd(5);
       const line =
         String(i + 1).padStart(2) + " " +
-        p.name.slice(0, 10).padEnd(10) + " " +
+        p.name.slice(0, 9).padEnd(9) + " " +
         nationShort + " " +
         String(p.vps).padStart(4) + " " +
         teamStr + " " +
@@ -270,7 +282,7 @@ async function fetchAndRespond(appId, token, gameId, env) {
 export default {
   async fetch(request, env, ctx) {
     if (request.method !== "POST") {
-      return new Response("ConWW3 Bot Worker is active!", { status: 200 });
+      return new Response("BlyatForceOne Bot Worker is active!", { status: 200 });
     }
     const bodyText = await request.text();
     if (!(await verifyDiscordSignature(request, bodyText))) {
@@ -298,6 +310,8 @@ export default {
     return new Response("Unknown command", { status: 400 });
   }
 };
+
+
 
 
 
