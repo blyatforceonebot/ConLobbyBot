@@ -58,8 +58,6 @@ async function checkServer(serverNum, gameId) {
     "tstamp": String(Math.floor(Date.now() / 1000))
   };
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 3500);
   try {
     const resp = await fetch(url, {
       method: "POST",
@@ -68,19 +66,17 @@ async function checkServer(serverNum, gameId) {
         "Origin": "https://conflictnations.com",
         "Referer": "https://conflictnations.com/"
       },
-      body: JSON.stringify(payload),
-      signal: controller.signal
+      body: JSON.stringify(payload)
     });
-    clearTimeout(timeout);
-    if (!resp.ok) return null;
+    if (!resp.ok) return { err: `HTTP ${resp.status}` };
     const text = await resp.text();
     if (text.includes("players") || text.includes("kdRatio")) {
-      return JSON.parse(text);
+      return { data: JSON.parse(text) };
     }
+    return { snippet: text.slice(0, 200) };
   } catch (e) {
-    clearTimeout(timeout);
+    return { err: String(e) };
   }
-  return null;
 }
 
 function extractPlayers(data) {
@@ -113,62 +109,81 @@ function extractPlayers(data) {
 
 async function fetchAndRespond(appId, token, gameId) {
   const webhookUrl = `https://discord.com{appId}/${token}/messages/@original`;
-  const priority = Array.of(12, 15, 14, 13, 11, 16, 10, 17, 9, 18, 8, 19, 7, 20, 6, 21, 5, 22, 4, 23, 3, 24, 2, 1);
+  try {
+    const priority = Array.of(12, 15, 14, 13, 11, 16, 10, 17, 9, 18, 8, 19, 7, 20, 6, 21, 5, 22, 4, 23, 3, 24, 2, 1);
+    let foundData = null;
+    let lastDebug = "";
 
-  let foundData = null;
-  for (let i = 0; i < priority.length; i += 8) {
-    const batch = priority.slice(i, i + 8);
-    const results = await Promise.all(batch.map(num => checkServer(num, gameId)));
-    foundData = results.find(r => r !== null);
-    if (foundData) break;
-  }
+    for (let i = 0; i < priority.length; i += 8) {
+      const batch = priority.slice(i, i + 8);
+      const results = await Promise.all(batch.map(num => checkServer(num, gameId)));
+      for (const r of results) {
+        if (r && r.data) {
+          foundData = r.data;
+          break;
+        }
+        if (r && (r.snippet || r.err)) {
+          lastDebug = r.snippet || r.err;
+        }
+      }
+      if (foundData) break;
+    }
 
-  if (!foundData) {
+    if (!foundData) {
+      await fetch(webhookUrl, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          content: `Could not fetch lobby data for Game ID \`${gameId}\`.\nDebug: \`${lastDebug.slice(0, 180)}\``
+        })
+      });
+      return;
+    }
+
+    const players = extractPlayers(foundData);
+    if (players.length === 0) {
+      await fetch(webhookUrl, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          content: `No active human players found in Game ID \`${gameId}\`.`
+        })
+      });
+      return;
+    }
+
+    let table = `# | ALLIANCE          | USERNAME           | K/D  | WIN% | LVL | SC  | JOIN | SOLO | COAL\n`;
+    table += `--+-------------------+--------------------+------+------+-----+-----+------+------+-----\n`;
+    players.forEach((p, idx) => {
+      const num = String(idx + 1).padEnd(2);
+      const all = p.alliance.padEnd(17);
+      const usr = p.name.padEnd(18);
+      const kd = String(p.kd).padEnd(4);
+      const win = `${p.winrate}%`.padEnd(4);
+      const lvl = String(p.level).padEnd(3);
+      const sc = p.sc.padEnd(3);
+      const jnd = String(p.joined).padEnd(4);
+      const sol = String(p.solo).padEnd(4);
+      const col = String(p.coalition).padEnd(4);
+      table += `${num}| ${all} | ${usr} | ${kd} | ${win} | ${lvl} | ${sc} | ${jnd} | ${sol} | ${col}\n`;
+    });
+
+    const content = `**CONFLICT OF NATIONS LOBBY VIEW — GAME ID: ${gameId} (${players.length} ACTIVE PLAYERS)**\n\`\`\`\n${table.slice(0, 1850)}\n\`\`\``;
+
+    await fetch(webhookUrl, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content })
+    });
+  } catch (fatalErr) {
     await fetch(webhookUrl, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        content: `Could not fetch lobby data for Game ID \`${gameId}\`. The game may have ended or a fresh session token is required.`
+        content: `Worker error: \`${String(fatalErr).slice(0, 200)}\``
       })
     });
-    return;
   }
-
-  const players = extractPlayers(foundData);
-  if (players.length === 0) {
-    await fetch(webhookUrl, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        content: `No active human players found in Game ID \`${gameId}\`.`
-      })
-    });
-    return;
-  }
-
-  let table = `# | ALLIANCE          | USERNAME           | K/D  | WIN% | LVL | SC  | JOIN | SOLO | COAL\n`;
-  table += `--+-------------------+--------------------+------+------+-----+-----+------+------+-----\n`;
-  players.forEach((p, idx) => {
-    const num = String(idx + 1).padEnd(2);
-    const all = p.alliance.padEnd(17);
-    const usr = p.name.padEnd(18);
-    const kd = String(p.kd).padEnd(4);
-    const win = `${p.winrate}%`.padEnd(4);
-    const lvl = String(p.level).padEnd(3);
-    const sc = p.sc.padEnd(3);
-    const jnd = String(p.joined).padEnd(4);
-    const sol = String(p.solo).padEnd(4);
-    const col = String(p.coalition).padEnd(4);
-    table += `${num}| ${all} | ${usr} | ${kd} | ${win} | ${lvl} | ${sc} | ${jnd} | ${sol} | ${col}\n`;
-  });
-
-  const content = `**CONFLICT OF NATIONS LOBBY VIEW — GAME ID: ${gameId} (${players.length} ACTIVE PLAYERS)**\n\`\`\`\n${table.slice(0, 1850)}\n\`\`\``;
-
-  await fetch(webhookUrl, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ content })
-  });
 }
 
 export default {
@@ -213,6 +228,7 @@ export default {
     return new Response("Unknown command", { status: 400 });
   }
 };
+
 
 
 
