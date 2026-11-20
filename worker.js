@@ -40,61 +40,71 @@ async function sendDiscordText(appId, token, content) {
 }
 
 async function loginBytro() {
-  const endpoints = [
-    {
-      url: "https://conflictnations.com",
-      body: new URLSearchParams({ user: CON_USERNAME, pass: CON_PASSWORD, pwd: CON_PASSWORD, remember: "1" }).toString()
-    },
-    {
-      url: "https://conflictnations.com",
-      body: new URLSearchParams({ user: CON_USERNAME, pass: CON_PASSWORD, submit: "Login" }).toString()
-    }
-  ];
-
-  for (const ep of endpoints) {
-    try {
-      const resp = await fetch(ep.url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-          "Origin": "https://conflictnations.com",
-          "Referer": "https://conflictnations.com",
-          "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15"
-        },
-        body: ep.body
-      });
-      const text = await resp.text();
-      const uidMatch = text.match(/(?:siteUserID|userID|uid)['"]?\s*[:=]\s*['"]?(\d{5,})/i);
-      const authMatch = text.match(/(?:userAuth|auth|token)['"]?\s*[:=]\s*['"]([a-f0-9]{32,64})['"]/i);
-      const verMatch = text.match(/(?:version|clientVersion)['"]?\s*[:=]\s*['"]?(\d{3,5})/i);
-
-      if (uidMatch && authMatch) {
-        return {
-          siteUserID: Number(uidMatch.at(1)),
-          userAuth: authMatch.at(1),
-          version: verMatch ? Number(verMatch.at(1)) : 420,
-          loggedIn: true
-        };
-      }
-    } catch (e) {}
-  }
-
-  let liveVersion = 420;
   try {
-    const pageResp = await fetch("https://conflictnations.com", {
-      headers: { "User-Agent": "Mozilla/5.0" }
+    // 1. TYPO3 felogin op Conflict of Nations
+    const loginResp = await fetch("https://conflictnations.com", {
+      method: "POST",
+      redirect: "manual",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Origin": "https://www.conflictnations.com",
+        "Referer": "https://www.conflictnations.com/",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+      },
+      body: new URLSearchParams({
+        user: CON_USERNAME,
+        pass: CON_PASSWORD,
+        logintype: "login",
+        pid: "306",
+        redirect_url: ""
+      }).toString()
     });
-    const pageHtml = await pageResp.text();
-    const vMatch = pageHtml.match(/version['"]?\s*[:=]\s*['"]?(\d{3,5})/i);
-    if (vMatch) liveVersion = Number(vMatch.at(1));
-  } catch (e) {}
 
-  return {
-    siteUserID: 91668627,
-    userAuth: "5a1bbe76f2d8d122d537f65f99aa57dee37d91b1",
-    version: liveVersion,
-    loggedIn: false
-  };
+    const rawCookie = loginResp.headers.get("set-cookie") || "";
+    const cookieHeader = rawCookie
+      .split(/,(?=\s*[a-zA-Z0-9_-]+=)/)
+      .map(c => c.split(";").at(0).trim())
+      .filter(Boolean)
+      .join("; ");
+
+    // 2. Haal de pagina op met de sessie-cookie om userAuth + siteUserID + version te lezen
+    const pageResp = await fetch("https://conflictnations.com", {
+      headers: {
+        "Cookie": cookieHeader,
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+      }
+    });
+    const html = await pageResp.text();
+
+    const uidMatch = html.match(/(?:siteUserID|userID)['"]?\s*[:=]\s*['"]?(\d{5,})/i);
+    const authMatch = html.match(/(?:userAuth|authHash)['"]?\s*[:=]\s*['"]([a-f0-9]{32,64})['"]/i);
+    const verMatch = html.match(/(?:version|clientVersion)['"]?\s*[:=]\s*['"]?(\d{3,5})/i);
+
+    if (uidMatch && authMatch) {
+      return {
+        siteUserID: Number(uidMatch.at(1)),
+        userAuth: authMatch.at(1),
+        version: verMatch ? Number(verMatch.at(1)) : 420,
+        loggedIn: true
+      };
+    }
+
+    return {
+      siteUserID: 91668627,
+      userAuth: "5a1bbe76f2d8d122d537f65f99aa57dee37d91b1",
+      version: verMatch ? Number(verMatch.at(1)) : 420,
+      loggedIn: false,
+      cookieLen: cookieHeader.length
+    };
+  } catch (e) {
+    return {
+      siteUserID: 91668627,
+      userAuth: "5a1bbe76f2d8d122d537f65f99aa57dee37d91b1",
+      version: 420,
+      loggedIn: false,
+      cookieLen: -1
+    };
+  }
 }
 
 async function checkServer(serverNum, gameId, auth) {
@@ -123,7 +133,7 @@ async function checkServer(serverNum, gameId, auth) {
       headers: {
         "Content-Type": "application/json",
         "Origin": "https://conflictnations.com",
-        "Referer": "https://conflictnations.com"
+        "Referer": "https://conflictnations.com/"
       },
       body: JSON.stringify(payload)
     });
@@ -160,7 +170,7 @@ async function fetchPlayerProfile(serverNum, gameId, siteUserId, auth) {
       headers: {
         "Content-Type": "application/json",
         "Origin": "https://conflictnations.com",
-        "Referer": "https://conflictnations.com"
+        "Referer": "https://conflictnations.com/"
       },
       body: JSON.stringify(payload)
     });
@@ -202,7 +212,7 @@ async function fetchAndRespond(appId, token, gameId) {
   let subrequests = 0;
 
   try {
-    subrequests += 3;
+    subrequests += 2;
     const auth = await loginBytro();
 
     let found = null;
@@ -251,8 +261,8 @@ async function fetchAndRespond(appId, token, gameId) {
     enriched.sort((a, b) => b.kd - a.kd);
 
     const firstProf = profiles.find(x => x !== null);
-    const sampleRaw = firstProf ? JSON.stringify(firstProf).slice(0, 120) : "no-prof";
-    let textOut = "**CON LOBBY " + gameId + " (Srv " + found.serverNum + " | Login:" + auth.loggedIn + " | v" + auth.version + ")**\n`" + sampleRaw + "`\n```\n";
+    const sampleRaw = firstProf ? JSON.stringify(firstProf).slice(0, 110) : "no-prof";
+    let textOut = "**CON LOBBY " + gameId + " (Srv " + found.serverNum + " | Login:" + auth.loggedIn + " c:" + (auth.cookieLen ?? "ok") + " | v" + auth.version + ")**\n`" + sampleRaw + "`\n```\n";
 
     for (let i = 0; i < enriched.length; i++) {
       const p = enriched.at(i);
@@ -299,6 +309,7 @@ export default {
     }
     return new Response("Unknown command", { status: 400 });
   }
-}
+};
+
 
 
