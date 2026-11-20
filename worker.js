@@ -63,7 +63,7 @@ async function checkServer(serverNum, gameId) {
       headers: {
         "Content-Type": "application/json",
         "Origin": "https://conflictnations.com",
-        "Referer": "https://conflictnations.com"
+        "Referer": "https://conflictnations.com/"
       },
       body: JSON.stringify(payload)
     });
@@ -77,7 +77,6 @@ async function checkServer(serverNum, gameId) {
 }
 
 function cleanName(rawName) {
-  // Voorkom dat Arabische/RTL-namen de hele Discord-regel omdraaien
   const cleaned = String(rawName || "Unknown").replace(/[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\u200E\u200F\u202A-\u202E]/g, "").trim();
   return cleaned || "Player";
 }
@@ -85,17 +84,14 @@ function cleanName(rawName) {
 function parseLobbyPlayer(p) {
   const vps = Number(p.vps ?? p.victoryPoints ?? p.points ?? 0);
   const team = Number(p.teamID ?? p.coalitionID ?? 0);
-  const kills = Number(p.kills ?? p.killsVsPlayers ?? 0);
-  const deaths = Number(p.deaths ?? p.deathsVsPlayers ?? 0);
-  const kd = Number(p.kdRatio ?? (deaths > 0 ? kills / deaths : kills) ?? 0);
-  const level = Number(p.level ?? p.rank ?? 0);
+  const nation = String(p.nationName ?? "");
+  const siteUserID = Number(p.siteUserID ?? p.userID ?? 0);
   return {
     name: cleanName(p.name),
     vps,
     team,
-    kd,
-    level,
-    siteUserID: Number(p.siteUserID ?? p.userID ?? 0)
+    nation,
+    siteUserID
   };
 }
 
@@ -138,16 +134,17 @@ async function fetchAndRespond(appId, token, gameId) {
     const players = rawPlayers.map(p => parseLobbyPlayer(p));
     players.sort((a, b) => b.vps - a.vps);
 
-    // Toon deel 2 van het ruwe speler-object (vanaf karakter 95) zodat we alle extra velden zien
+    // Bekijk de rest van het speler-object (vanaf karakter 235) zodat we zien of siteUserID/stats daar staan
     const sampleObj = rawPlayers.find(p => p.name && p.name !== "Guest") || rawPlayers.at(0);
-    const extraFields = JSON.stringify(sampleObj).slice(95, 235);
+    const tailFields = JSON.stringify(sampleObj).slice(235, 420);
 
-    let textOut = "**CON LOBBY " + gameId + " (Server " + found.serverNum + " | " + players.length + " Active)**\n`" + extraFields + "`\n```\n";
+    let textOut = "**CON LOBBY " + gameId + " (Server " + found.serverNum + " | " + players.length + " Active)**\n`" + tailFields + "`\n```\n";
 
     for (let i = 0; i < players.length; i++) {
       const p = players.at(i);
       const teamStr = p.team > 0 ? ("T" + p.team).padEnd(3) : "---";
-      const line = String(i + 1).padStart(2) + " " + p.name.slice(0, 14).padEnd(14) + " VP:" + String(p.vps).padStart(4) + " " + teamStr + "\n";
+      const nationShort = p.nation ? p.nation.slice(0, 8).padEnd(8) : "";
+      const line = String(i + 1).padStart(2) + " " + p.name.slice(0, 13).padEnd(13) + " " + nationShort + " VP:" + String(p.vps).padStart(4) + " " + teamStr + "\n";
       if (textOut.length + line.length > 1950) break;
       textOut += line;
     }
@@ -191,6 +188,7 @@ export default {
     return new Response("Unknown command", { status: 400 });
   }
 };
+
 
 
 
