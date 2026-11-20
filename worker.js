@@ -38,8 +38,8 @@ async function verifyDiscordSignature(request, bodyText) {
 }
 
 async function sendDiscordFollowup(appId, token, content) {
-  const baseUrl = "https://" + "://discord.com";
-  const webhookUrl = `${baseUrl}${appId}/${token}/messages/@original`;
+  const path = Array.of("api", "v10", "webhooks", appId, token, "messages", "@original").join("/");
+  const webhookUrl = new URL(path, "https://discord.com").toString();
   await fetch(webhookUrl, {
     method: "PATCH",
     headers: {
@@ -51,7 +51,8 @@ async function sendDiscordFollowup(appId, token, content) {
 }
 
 async function checkServer(serverNum, gameId) {
-  const url = "https://" + `congs${serverNum}://`;
+  const host = `congs${serverNum}.c.bytro.com`;
+  const url = new URL("/", `https://${host}`).toString();
   const payload = {
     "@c": "ultshared.action.UltUpdateGameStateAction",
     "requestID": 1,
