@@ -54,22 +54,39 @@ async function sendDiscordImage(appId, token, caption, pngBuffer) {
 async function loginBytro(env) {
   const user = env?.CON_USER || DEFAULT_CON_USER;
   const pass = env?.CON_PASS || DEFAULT_CON_PASS;
-  if (!user || !pass) return { error: "NO_ENV" };
-
-  const candidates = Array.of(
-    {
-      url: "https://conflictnations.com",
-      body: new URLSearchParams({ action: "login", username: user, password: pass, remember: "1" }).toString()
-    },
-    {
-      url: "https://conflictnations.com",
-      body: new URLSearchParams({ controller: "Auth", action: "login", user: user, pass: pass }).toString()
-    },
-    {
-      url: "https://conflictnations.com",
-      body: new URLSearchParams({ user: user, pass: pass, logintype: "login", pid: "1" }).toString()
-    }
+  const urls = Array.of(
+    "https://conflictnations.com",
+    "https://conflictnations.com"
   );
+  let info = "";
+  for (const u of urls) {
+    try {
+      const body = new URLSearchParams({ action: "login", username: user, password: pass, user: user, pass: pass }).toString();
+      const resp = await fetch(u, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "X-Requested-With": "XMLHttpRequest",
+          "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)",
+          "Origin": "https://conflictnations.com",
+          "Referer": "https://conflictnations.com/"
+        },
+        body
+      });
+      const text = await resp.text();
+      const uid = text.match(/(?:siteUserID|userID|uid)["'=:\s]+(\d{5,12})/i);
+      const auth = text.match(/(?:userAuth|auth|uberAuth|token)["'=:\s]+([a-f0-9]{32,40})/i) || text.match(/([a-f0-9]{40})/i);
+      if (uid && auth) {
+        return { siteUserID: Number(uid.at(1)), userAuth: auth.at(1), version: 420 };
+      }
+      info += resp.status + ":" + text.replace(/<[^>]*>/g, "").trim().slice(0, 15) + "|";
+    } catch (e) {
+      info += "ERR|";
+    }
+  }
+  return { error: info.slice(0, 28) || "FAIL" };
+}
+
 
   let diag = "";
   for (const c of candidates) {
