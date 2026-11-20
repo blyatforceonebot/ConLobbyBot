@@ -1,5 +1,5 @@
 const PUBLIC_KEY = "d4b2c5584aab9b59d22fcedfe90d62bbfc748e963613516db18212d40a1e32b6";
-const CON_USERNAME = "BlyatForceOne";
+const CON_USERNAME = "Blyatforceone";
 const CON_PASSWORD = "12345Qwerty.";
 
 function hexToBytes(hex) {
@@ -40,35 +40,61 @@ async function sendDiscordText(appId, token, content) {
 }
 
 async function loginBytro() {
-  // 1. Haal huidige client-versie en sessie op van Conflict of Nations
-  try {
-    const homeResp = await fetch("https://conflictnations.com", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Origin": "https://www.conflictnations.com",
-        "Referer": "https://www.conflictnations.com/"
-      },
-      body: new URLSearchParams({
-        user: CON_USERNAME,
-        pass: CON_PASSWORD,
-        submit: "Login"
-      }).toString()
-    });
-    const html = await homeResp.text();
-    const uidMatch = html.match(/siteUserID['"]?\s*[:=]\s*['"]?(\d+)/i) || html.match(/userID['"]?\s*[:=]\s*['"]?(\d+)/i);
-    const authMatch = html.match(/userAuth['"]?\s*[:=]\s*['"]([a-f0-9]{32,64})['"]/i);
-    const verMatch = html.match(/version['"]?\s*[:=]\s*['"]?(\d{3,5})/i);
-
-    if (uidMatch && authMatch) {
-      return {
-        siteUserID: Number(uidMatch.at(1)),
-        userAuth: authMatch.at(1),
-        version: verMatch ? Number(verMatch.at(1)) : 420
-      };
+  const endpoints = [
+    {
+      url: "https://conflictnations.com",
+      body: new URLSearchParams({ user: CON_USERNAME, pass: CON_PASSWORD, pwd: CON_PASSWORD, remember: "1" }).toString()
+    },
+    {
+      url: "https://conflictnations.com",
+      body: new URLSearchParams({ user: CON_USERNAME, pass: CON_PASSWORD, submit: "Login" }).toString()
     }
+  ];
+
+  for (const ep of endpoints) {
+    try {
+      const resp = await fetch(ep.url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "Origin": "https://conflictnations.com",
+          "Referer": "https://conflictnations.com",
+          "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15"
+        },
+        body: ep.body
+      });
+      const text = await resp.text();
+      const uidMatch = text.match(/(?:siteUserID|userID|uid)['"]?\s*[:=]\s*['"]?(\d{5,})/i);
+      const authMatch = text.match(/(?:userAuth|auth|token)['"]?\s*[:=]\s*['"]([a-f0-9]{32,64})['"]/i);
+      const verMatch = text.match(/(?:version|clientVersion)['"]?\s*[:=]\s*['"]?(\d{3,5})/i);
+
+      if (uidMatch && authMatch) {
+        return {
+          siteUserID: Number(uidMatch.at(1)),
+          userAuth: authMatch.at(1),
+          version: verMatch ? Number(verMatch.at(1)) : 420,
+          loggedIn: true
+        };
+      }
+    } catch (e) {}
+  }
+
+  let liveVersion = 420;
+  try {
+    const pageResp = await fetch("https://conflictnations.com", {
+      headers: { "User-Agent": "Mozilla/5.0" }
+    });
+    const pageHtml = await pageResp.text();
+    const vMatch = pageHtml.match(/version['"]?\s*[:=]\s*['"]?(\d{3,5})/i);
+    if (vMatch) liveVersion = Number(vMatch.at(1));
   } catch (e) {}
-  return null;
+
+  return {
+    siteUserID: 91668627,
+    userAuth: "5a1bbe76f2d8d122d537f65f99aa57dee37d91b1",
+    version: liveVersion,
+    loggedIn: false
+  };
 }
 
 async function checkServer(serverNum, gameId, auth) {
@@ -97,7 +123,7 @@ async function checkServer(serverNum, gameId, auth) {
       headers: {
         "Content-Type": "application/json",
         "Origin": "https://conflictnations.com",
-        "Referer": "https://conflictnations.com/"
+        "Referer": "https://conflictnations.com"
       },
       body: JSON.stringify(payload)
     });
@@ -134,7 +160,7 @@ async function fetchPlayerProfile(serverNum, gameId, siteUserId, auth) {
       headers: {
         "Content-Type": "application/json",
         "Origin": "https://conflictnations.com",
-        "Referer": "https://conflictnations.com/"
+        "Referer": "https://conflictnations.com"
       },
       body: JSON.stringify(payload)
     });
@@ -176,15 +202,9 @@ async function fetchAndRespond(appId, token, gameId) {
   let subrequests = 0;
 
   try {
-    // 1. Log automatisch in met het bot-account
-    subrequests++;
+    subrequests += 3;
     const auth = await loginBytro();
-    if (!auth) {
-      await sendDiscordText(appId, token, "Bytro login mislukt. Controleer CON_USERNAME en CON_PASSWORD in worker.js.");
-      return;
-    }
 
-    // 2. Zoek op welke server de game draait
     let found = null;
     const priority = Array.of(12, 15, 14, 13, 11, 16, 10, 17, 9, 18, 8, 19, 7, 20, 6, 21, 5, 22, 4, 23, 3, 24, 2, 1);
 
@@ -232,7 +252,7 @@ async function fetchAndRespond(appId, token, gameId) {
 
     const firstProf = profiles.find(x => x !== null);
     const sampleRaw = firstProf ? JSON.stringify(firstProf).slice(0, 120) : "no-prof";
-    let textOut = "**CON LOBBY " + gameId + " (Srv " + found.serverNum + " | v" + auth.version + " | " + rawPlayers.length + "p)**\n`" + sampleRaw + "`\n```\n";
+    let textOut = "**CON LOBBY " + gameId + " (Srv " + found.serverNum + " | Login:" + auth.loggedIn + " | v" + auth.version + ")**\n`" + sampleRaw + "`\n```\n";
 
     for (let i = 0; i < enriched.length; i++) {
       const p = enriched.at(i);
@@ -279,7 +299,6 @@ export default {
     }
     return new Response("Unknown command", { status: 400 });
   }
-};
-
+}
 
 
