@@ -121,7 +121,7 @@ function escapeXml(str) {
   return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-function buildLobbySvg(gameId, players) {
+function buildLobbySvg(gameId, players, totalCount) {
   const rowH = 26, headH = 104, width = 940, height = headH + players.length * rowH + 24;
   let rowsSvg = "";
   players.forEach((p, idx) => {
@@ -143,15 +143,18 @@ function buildLobbySvg(gameId, players) {
     rowsSvg += '<text x="775" y="' + (y + 17) + '" fill="#cbd5e1" font-size="13">' + p.solo + '</text>';
     rowsSvg += '<text x="845" y="' + (y + 17) + '" fill="#cbd5e1" font-size="13">' + p.coalition + '</text>';
   });
-  return '<svg xmlns="http://w3.org" width="' + width + '" height="' + height + '" viewBox="0 0 ' + width + ' ' + height + '"><rect width="100%" height="100%" fill="#0f131a"/><rect x="0" y="0" width="100%" height="74" fill="#18202c"/><text x="24" y="28" fill="#94a3b8" font-family="sans-serif" font-size="12" font-weight="bold">CONFLICT OF NATIONS LOBBY VIEW</text><text x="24" y="54" fill="#ffffff" font-family="sans-serif" font-size="20" font-weight="bold">GAME ID: ' + escapeXml(gameId) + '  •  ' + players.length + ' ACTIVE PLAYERS</text><g font-family="sans-serif" font-size="11" font-weight="bold" fill="#94a3b8"><text x="26" y="92">#</text><text x="64" y="92">ALLIANCE</text><text x="242" y="92">USERNAME</text><text x="430" y="92">K/D</text><text x="500" y="92">WIN%</text><text x="570" y="92">LVL</text><text x="630" y="92">SC</text><text x="695" y="92">JOINED</text><text x="775" y="92">SOLO</text><text x="845" y="92">COALITION</text></g><g font-family="monospace, sans-serif">' + rowsSvg + '</g></svg>';
+  return '<svg xmlns="http://w3.org" width="' + width + '" height="' + height + '" viewBox="0 0 ' + width + ' ' + height + '"><rect width="100%" height="100%" fill="#0f131a"/><rect x="0" y="0" width="100%" height="74" fill="#18202c"/><text x="24" y="28" fill="#94a3b8" font-family="sans-serif" font-size="12" font-weight="bold">CONFLICT OF NATIONS LOBBY VIEW</text><text x="24" y="54" fill="#ffffff" font-family="sans-serif" font-size="20" font-weight="bold">GAME ID: ' + escapeXml(gameId) + '  •  ' + totalCount + ' ACTIVE PLAYERS (SHOWING ' + players.length + ')</text><g font-family="sans-serif" font-size="11" font-weight="bold" fill="#94a3b8"><text x="26" y="92">#</text><text x="64" y="92">ALLIANCE</text><text x="242" y="92">USERNAME</text><text x="430" y="92">K/D</text><text x="500" y="92">WIN%</text><text x="570" y="92">LVL</text><text x="630" y="92">SC</text><text x="695" y="92">JOINED</text><text x="775" y="92">SOLO</text><text x="845" y="92">COALITION</text></g><g font-family="monospace, sans-serif">' + rowsSvg + '</g></svg>';
 }
 
 async function fetchAndRespond(appId, token, gameId) {
   try {
     const priority = Array.of(12, 15, 14, 13, 11, 16, 10, 17, 9, 18, 8, 19, 7, 20, 6, 21, 5, 22, 4, 23, 3, 24, 2, 1);
     let found = null;
-    for (let i = 0; i < priority.length; i += 8) {
-      const results = await Promise.all(priority.slice(i, i + 8).map(num => checkServer(num, gameId)));
+    let callsUsed = 0;
+    for (let i = 0; i < priority.length; i += 4) {
+      const batch = priority.slice(i, i + 4);
+      callsUsed += batch.length;
+      const results = await Promise.all(batch.map(num => checkServer(num, gameId)));
       found = results.find(r => r !== null);
       if (found) break;
     }
@@ -160,14 +163,14 @@ async function fetchAndRespond(appId, token, gameId) {
       return;
     }
     const rawPlayers = extractRawPlayers(found.data);
-    const enriched = new Array();
-    for (let i = 0; i < rawPlayers.length; i += 25) {
-      const slice = rawPlayers.slice(i, i + 25);
-      const profiles = await Promise.all(slice.map(p => fetchPlayerProfile(found.serverNum, gameId, p.siteUserID || p.userID)));
-      slice.forEach((p, idx) => enriched.push({ name: String(p.name || "Unknown"), ...parseStatNumbers(p, profiles.at(idx)) }));
-    }
+    const maxProf = Math.max(0, Math.min(50, 48 - callsUsed));
+    const capped = rawPlayers.slice(0, 50);
+    const profBatch = capped.slice(0, maxProf);
+    const profiles = await Promise.all(profBatch.map(p => fetchPlayerProfile(found.serverNum, gameId, p.siteUserID || p.userID)));
+    const enriched = capped.map((p, idx) => ({ name: String(p.name || "Unknown"), ...parseStatNumbers(p, profiles.at(idx)) }));
     enriched.sort((a, b) => b.kd - a.kd);
-    const svg = buildLobbySvg(gameId, enriched);
+
+    const svg = buildLobbySvg(gameId, enriched, rawPlayers.length);
     const totalHeight = 104 + enriched.length * 26 + 24;
     const pngResp = await fetch(new URL("/chart", "https://quickchart.io").toString(), {
       method: "POST",
@@ -177,11 +180,11 @@ async function fetchAndRespond(appId, token, gameId) {
     if (pngResp.ok) {
       const pngBuffer = await pngResp.arrayBuffer();
       if (pngBuffer.byteLength > 200) {
-        await sendDiscordImage(appId, token, pngBuffer, "lobby_" + gameId + ".png", "**Conflict of Nations Lobby View — Game ID: " + gameId + " (" + enriched.length + " Active Players)**");
+        await sendDiscordImage(appId, token, pngBuffer, "lobby_" + gameId + ".png", "**Conflict of Nations Lobby View — Game ID: " + gameId + " (" + rawPlayers.length + " Active Players)**");
         return;
       }
     }
-    let textOut = "**CONFLICT OF NATIONS LOBBY VIEW — GAME ID: " + gameId + " (" + enriched.length + " ACTIVE PLAYERS)**\n";
+    let textOut = "**CONFLICT OF NATIONS LOBBY VIEW — GAME ID: " + gameId + " (" + rawPlayers.length + " ACTIVE PLAYERS)**\n";
     enriched.slice(0, 35).forEach((p, i) => {
       textOut += String(i + 1).padEnd(3) + " | " + p.name.padEnd(18) + " | K/D: " + p.kd.toFixed(2) + " | WIN: " + p.winrate + "% | LVL: " + p.level + "\n";
     });
@@ -207,8 +210,6 @@ export default {
     return new Response("Unknown command", { status: 400 });
   }
 };
-
-
 
 
 
