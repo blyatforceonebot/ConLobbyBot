@@ -1,4 +1,6 @@
 const PUBLIC_KEY = "d4b2c5584aab9b59d22fcedfe90d62bbfc748e963613516db18212d40a1e32b6";
+const DEFAULT_CON_USER = "Blyatforceone";
+const DEFAULT_CON_PASS = "12345Qwerty.";
 
 function hexToBytes(hex) {
   const arr = new Uint8Array(hex.length / 2);
@@ -37,11 +39,11 @@ async function sendDiscordText(appId, token, content) {
   });
 }
 
-async function sendDiscordImage(appId, token, caption, pngBytes) {
+async function sendDiscordImage(appId, token, caption, pngBuffer) {
   const path = Array.of("api", "v10", "webhooks", appId, token, "messages", "@original").join("/");
   const form = new FormData();
   form.append("payload_json", JSON.stringify({ content: caption }));
-  form.append("files[0]", new Blob([pngBytes], { type: "image/png" }), "lobby.png");
+  form.append("files[0]", new Blob([pngBuffer], { type: "image/png" }), "lobby.png");
   await fetch(new URL(path, "https://discord.com").toString(), {
     method: "PATCH",
     headers: { "User-Agent": "DiscordBot (https://workers.dev, 1.0)" },
@@ -50,7 +52,9 @@ async function sendDiscordImage(appId, token, caption, pngBytes) {
 }
 
 async function loginBytro(env) {
-  if (!env.CON_USER || !env.CON_PASS) return { error: "NO_ENV" };
+  const user = env?.CON_USER || DEFAULT_CON_USER;
+  const pass = env?.CON_PASS || DEFAULT_CON_PASS;
+  if (!user || !pass) return { error: "NO_ENV" };
   const endpoints = [
     "https://conflictnations.com",
     "https://conflictnations.com"
@@ -59,10 +63,10 @@ async function loginBytro(env) {
   for (const ep of endpoints) {
     try {
       const form = new URLSearchParams();
-      form.set("user", env.CON_USER);
-      form.set("pass", env.CON_PASS);
-      form.set("username", env.CON_USER);
-      form.set("password", env.CON_PASS);
+      form.set("user", user);
+      form.set("pass", pass);
+      form.set("username", user);
+      form.set("password", pass);
       form.set("login", "1");
       const resp = await fetch(ep, {
         method: "POST",
@@ -191,6 +195,76 @@ async function fetchUserDetailsBatch(serverNum, gameId, siteUserIDs, session) {
   return statsMap;
 }
 
+function escXml(str) {
+  return String(str || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function buildBlackLobbySvg(gameId, serverNum, players, statsMap, authStatus) {
+  const maxRows = Math.min(players.length, 64);
+  const rowH = 26;
+  const headerH = 74;
+  const width = 920;
+  const height = headerH + maxRows * rowH + 20;
+
+  let rowsSvg = "";
+  for (let i = 0; i < maxRows; i++) {
+    const p = players[i];
+    const st = statsMap[p.siteUserID] || { kd: "-", winPct: "-", level: "-", sc: "-" };
+    const y = headerH + i * rowH;
+    const bg = i % 2 === 0 ? "#000000" : "#0d0d0d";
+    const teamStr = p.team > 0 ? ("Team " + p.team) : "-";
+    const scColor = st.sc === "Y" ? "#4ade80" : "#ffffff";
+
+    rowsSvg += `<rect x="0" y="${y}" width="${width}" height="${rowH}" fill="${bg}"/>`;
+    rowsSvg += `<line x1="16" y1="${y + rowH}" x2="${width - 16}" y2="${y + rowH}" stroke="#1f1f1f" stroke-width="1"/>`;
+    rowsSvg += `<text x="24" y="${y + 18}" fill="#a3a3a3" font-size="14">${i + 1}</text>`;
+    rowsSvg += `<text x="64" y="${y + 18}" fill="#ffffff" font-size="14" font-weight="bold">${escXml(p.name.slice(0, 18))}</text>`;
+    rowsSvg += `<text x="255" y="${y + 18}" fill="#e5e5e5" font-size="14">${escXml((p.nation || "-").slice(0, 16))}</text>`;
+    rowsSvg += `<text x="435" y="${y + 18}" fill="#ffffff" font-size="14">${p.vps}</text>`;
+    rowsSvg += `<text x="515" y="${y + 18}" fill="#d4d4d4" font-size="14">${escXml(teamStr)}</text>`;
+    rowsSvg += `<text x="615" y="${y + 18}" fill="#ffffff" font-size="14">${escXml(st.kd)}</text>`;
+    rowsSvg += `<text x="700" y="${y + 18}" fill="#ffffff" font-size="14">${escXml(st.winPct)}</text>`;
+    rowsSvg += `<text x="785" y="${y + 18}" fill="#ffffff" font-size="14">${escXml(st.level)}</text>`;
+    rowsSvg += `<text x="860" y="${y + 18}" fill="${scColor}" font-size="14" font-weight="bold">${escXml(st.sc)}</text>`;
+  }
+
+  return `<svg xmlns="http://w3.org" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+    <rect width="100%" height="100%" fill="#000000"/>
+    <g font-family="DejaVu Sans, Arial, sans-serif">
+      <text x="24" y="30" fill="#ffffff" font-size="20" font-weight="bold">BlyatForceOne — Lobby #${escXml(gameId)}</text>
+      <text x="900" y="30" fill="#a3a3a3" font-size="13" text-anchor="end">Server ${serverNum} | ${players.length} Active | ${escXml(authStatus)}</text>
+      <rect x="0" y="44" width="${width}" height="28" fill="#141414"/>
+      <text x="24" y="63" fill="#ffffff" font-size="13" font-weight="bold">#</text>
+      <text x="64" y="63" fill="#ffffff" font-size="13" font-weight="bold">Player</text>
+      <text x="255" y="63" fill="#ffffff" font-size="13" font-weight="bold">Nation</text>
+      <text x="435" y="63" fill="#ffffff" font-size="13" font-weight="bold">VP</text>
+      <text x="515" y="63" fill="#ffffff" font-size="13" font-weight="bold">Team</text>
+      <text x="615" y="63" fill="#ffffff" font-size="13" font-weight="bold">K/D</text>
+      <text x="700" y="63" fill="#ffffff" font-size="13" font-weight="bold">Win%</text>
+      <text x="785" y="63" fill="#ffffff" font-size="13" font-weight="bold">Level</text>
+      <text x="855" y="63" fill="#ffffff" font-size="13" font-weight="bold">SC</text>
+      ${rowsSvg}
+    </g>
+  </svg>`;
+}
+async function renderSvgToPng(svgString) {
+  try {
+    const resp = await fetch("https://quickchart.io", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ svg: svgString })
+    });
+    if (!resp.ok) return null;
+    return await resp.arrayBuffer();
+  } catch (e) {
+    return null;
+  }
+}
+
 function cleanName(rawName) {
   const cleaned = String(rawName || "Unknown").replace(/[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\u200E\u200F\u202A-\u202E]/g, "").trim();
   return cleaned || "Player";
@@ -247,28 +321,26 @@ async function fetchAndRespond(appId, token, gameId, env) {
 
     const uids = players.map(p => p.siteUserID).filter(id => id > 0);
     const statsMap = await fetchUserDetailsBatch(found.serverNum, gameId, uids, session);
-
     const authStatus = session && session.siteUserID ? "Auth:OK" : ("Auth:Fail(" + (session?.error || "?") + ")");
-    let textOut = "**BlyatForceOne | LOBBY " + gameId + " (S" + found.serverNum + " | " + players.length + " Active | " + authStatus + ")**\n```\n";
-    textOut += "#  Player    Nat   VP Tm  K/D  Win% Lv SC\n";
 
-    for (let i = 0; i < players.length; i++) {
-      const p = players.at(i);
+    const svg = buildBlackLobbySvg(gameId, found.serverNum, players, statsMap, authStatus);
+    const pngBuffer = await renderSvgToPng(svg);
+
+    if (pngBuffer && pngBuffer.byteLength > 500) {
+      await sendDiscordImage(
+        appId,
+        token,
+        "**BlyatForceOne | Lobby " + gameId + "** (Server " + found.serverNum + " • " + players.length + " Active • " + authStatus + ")",
+        pngBuffer
+      );
+      return;
+    }
+
+    let textOut = "**BlyatForceOne | LOBBY " + gameId + " (S" + found.serverNum + " | " + players.length + " Active | " + authStatus + ")**\n```\n";
+    for (let i = 0; i < Math.min(players.length, 30); i++) {
+      const p = players[i];
       const st = statsMap[p.siteUserID] || { kd: "-", winPct: "-", level: "-", sc: "-" };
-      const teamStr = p.team > 0 ? ("T" + p.team).padEnd(3) : "---";
-      const nationShort = (p.nation || "").slice(0, 5).padEnd(5);
-      const line =
-        String(i + 1).padStart(2) + " " +
-        p.name.slice(0, 9).padEnd(9) + " " +
-        nationShort + " " +
-        String(p.vps).padStart(4) + " " +
-        teamStr + " " +
-        String(st.kd).padStart(4) + " " +
-        String(st.winPct).padStart(4) + " " +
-        String(st.level).padStart(2) + " " +
-        st.sc + "\n";
-      if (textOut.length + line.length > 1950) break;
-      textOut += line;
+      textOut += `${i + 1}. ${p.name} (${p.nation}) VP:${p.vps} K/D:${st.kd} Win:${st.winPct} Lv:${st.level} SC:${st.sc}\n`;
     }
     textOut += "```";
     await sendDiscordText(appId, token, textOut);
@@ -310,6 +382,7 @@ export default {
     return new Response("Unknown command", { status: 400 });
   }
 };
+
 
 
 
