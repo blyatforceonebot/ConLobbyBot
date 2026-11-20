@@ -31,15 +31,21 @@ async function sendDiscordText(appId, token, content) {
   const path = Array.of("api", "v10", "webhooks", appId, token, "messages", "@original").join("/");
   await fetch(new URL(path, "https://discord.com").toString(), {
     method: "PATCH",
-    headers: { "Content-Type": "application/json", "User-Agent": "DiscordBot (https://workers.dev, 1.0)" },
-    body: JSON.stringify({ content })
+    headers: {
+      "Content-Type": "application/json",
+      "User-Agent": "DiscordBot (https://workers.dev, 1.0)"
+    },
+    body: JSON.stringify({ content: content.slice(0, 1990) })
   });
 }
 
 async function sendDiscordImage(appId, token, imageBytes, filename, caption) {
   const path = Array.of("api", "v10", "webhooks", appId, token, "messages", "@original").join("/");
   const form = new FormData();
-  form.append("payload_json", JSON.stringify({ content: caption, attachments: Array.of({ id: 0, filename }) }));
+  form.append("payload_json", JSON.stringify({
+    content: caption,
+    attachments: Array.of({ id: 0, filename })
+  }));
   form.append("files", new Blob(Array.of(imageBytes), { type: "image/png" }), filename);
   await fetch(new URL(path, "https://discord.com").toString(), {
     method: "PATCH",
@@ -51,20 +57,38 @@ async function sendDiscordImage(appId, token, imageBytes, filename, caption) {
 async function checkServer(serverNum, gameId) {
   const url = new URL("/", "https://congs" + serverNum + ".c.bytro.com").toString();
   const payload = {
-    "@c": "ultshared.action.UltUpdateGameStateAction", "requestID": 1, "language": "en", "lastCallDuration": 0,
-    "actions": Array.of("java.util.LinkedList", new Array()), "stateIDs": null, "tstamps": null, "version": 382,
-    "client": "con-client-mobile-portrait", "siteUserID": CON_USER_ID, "adminLevel": 0, "gameID": Number(gameId),
-    "playerID": 0, "rights": "chat", "userAuth": CON_USER_AUTH, "tstamp": String(Math.floor(Date.now() / 1000))
+    "@c": "ultshared.action.UltUpdateGameStateAction",
+    "requestID": 1,
+    "language": "en",
+    "lastCallDuration": 0,
+    "actions": Array.of("java.util.LinkedList", new Array()),
+    "stateIDs": null,
+    "tstamps": null,
+    "version": 382,
+    "client": "con-client-mobile-portrait",
+    "siteUserID": CON_USER_ID,
+    "adminLevel": 0,
+    "gameID": Number(gameId),
+    "playerID": 0,
+    "rights": "chat",
+    "userAuth": CON_USER_AUTH,
+    "tstamp": String(Math.floor(Date.now() / 1000))
   };
   try {
     const resp = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "Origin": "https://conflictnations.com", "Referer": "https://conflictnations.com/" },
+      headers: {
+        "Content-Type": "application/json",
+        "Origin": "https://conflictnations.com",
+        "Referer": "https://conflictnations.com"
+      },
       body: JSON.stringify(payload)
     });
     if (!resp.ok) return null;
     const text = await resp.text();
-    if (text.includes("players") || text.includes("kdRatio")) return { serverNum, data: JSON.parse(text) };
+    if (text.includes("players") || text.includes("kdRatio")) {
+      return { serverNum, data: JSON.parse(text) };
+    }
   } catch (e) {}
   return null;
 }
@@ -73,19 +97,36 @@ async function fetchPlayerProfile(serverNum, gameId, siteUserId) {
   if (!siteUserId || siteUserId <= 0) return null;
   const url = new URL("/", "https://congs" + serverNum + ".c.bytro.com").toString();
   const payload = {
-    "@c": "ultshared.action.UltGetUserDetailsAction", "requestID": 2, "language": "en", "targetUserID": Number(siteUserId),
-    "version": 382, "client": "con-client-mobile-portrait", "siteUserID": CON_USER_ID, "adminLevel": 0,
-    "gameID": Number(gameId), "playerID": 0, "rights": "chat", "userAuth": CON_USER_AUTH, "tstamp": String(Math.floor(Date.now() / 1000))
+    "@c": "ultshared.action.UltGetUserDetailsAction",
+    "requestID": 2,
+    "language": "en",
+    "targetUserID": Number(siteUserId),
+    "version": 382,
+    "client": "con-client-mobile-portrait",
+    "siteUserID": CON_USER_ID,
+    "adminLevel": 0,
+    "gameID": Number(gameId),
+    "playerID": 0,
+    "rights": "chat",
+    "userAuth": CON_USER_AUTH,
+    "tstamp": String(Math.floor(Date.now() / 1000))
   };
   try {
     const resp = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "Origin": "https://conflictnations.com", "Referer": "https://conflictnations.com/" },
+      headers: {
+        "Content-Type": "application/json",
+        "Origin": "https://conflictnations.com",
+        "Referer": "https://conflictnations.com"
+      },
       body: JSON.stringify(payload)
     });
     return resp.ok ? await resp.json() : null;
-  } catch (e) { return null; }
+  } catch (e) {
+    return null;
+  }
 }
+
 function parseStatNumbers(p, prof) {
   const res = prof?.result || prof || {};
   const u = res.userDetails || res.user || res.profile || res;
@@ -118,7 +159,11 @@ function extractRawPlayers(data) {
 }
 
 function escapeXml(str) {
-  return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 function buildLobbySvg(gameId, players, totalCount) {
@@ -143,73 +188,179 @@ function buildLobbySvg(gameId, players, totalCount) {
     rowsSvg += '<text x="775" y="' + (y + 17) + '" fill="#cbd5e1" font-size="13">' + p.solo + '</text>';
     rowsSvg += '<text x="845" y="' + (y + 17) + '" fill="#cbd5e1" font-size="13">' + p.coalition + '</text>';
   });
-  return '<svg xmlns="http://w3.org" width="' + width + '" height="' + height + '" viewBox="0 0 ' + width + ' ' + height + '"><rect width="100%" height="100%" fill="#0f131a"/><rect x="0" y="0" width="100%" height="74" fill="#18202c"/><text x="24" y="28" fill="#94a3b8" font-family="sans-serif" font-size="12" font-weight="bold">CONFLICT OF NATIONS LOBBY VIEW</text><text x="24" y="54" fill="#ffffff" font-family="sans-serif" font-size="20" font-weight="bold">GAME ID: ' + escapeXml(gameId) + '  •  ' + totalCount + ' ACTIVE PLAYERS (SHOWING ' + players.length + ')</text><g font-family="sans-serif" font-size="11" font-weight="bold" fill="#94a3b8"><text x="26" y="92">#</text><text x="64" y="92">ALLIANCE</text><text x="242" y="92">USERNAME</text><text x="430" y="92">K/D</text><text x="500" y="92">WIN%</text><text x="570" y="92">LVL</text><text x="630" y="92">SC</text><text x="695" y="92">JOINED</text><text x="775" y="92">SOLO</text><text x="845" y="92">COALITION</text></g><g font-family="monospace, sans-serif">' + rowsSvg + '</g></svg>';
-}
 
+  return '<svg xmlns="http://w3.org" width="' + width + '" height="' + height + '" viewBox="0 0 ' + width + ' ' + height + '">' +
+    '<rect width="100%" height="100%" fill="#0f131a"/>' +
+    '<rect x="0" y="0" width="100%" height="74" fill="#18202c"/>' +
+    '<text x="24" y="28" fill="#94a3b8" font-family="sans-serif" font-size="12" font-weight="bold">CONFLICT OF NATIONS LOBBY VIEW</text>' +
+    '<text x="24" y="54" fill="#ffffff" font-family="sans-serif" font-size="20" font-weight="bold">GAME ID: ' + escapeXml(gameId) + '  •  ' + totalCount + ' ACTIVE PLAYERS (SHOWING ' + players.length + ')</text>' +
+    '<g font-family="sans-serif" font-size="11" font-weight="bold" fill="#94a3b8">' +
+      '<text x="26" y="92">#</text><text x="64" y="92">ALLIANCE</text><text x="242" y="92">USERNAME</text>' +
+      '<text x="430" y="92">K/D</text><text x="500" y="92">WIN%</text><text x="570" y="92">LVL</text>' +
+      '<text x="630" y="92">SC</text><text x="695" y="92">JOINED</text><text x="775" y="92">SOLO</text><text x="845" y="92">COALITION</text>' +
+    '</g>' +
+    '<g font-family="monospace, sans-serif">' + rowsSvg + '</g>' +
+  '</svg>';
+}
 async function fetchAndRespond(appId, token, gameId) {
+  const cache = caches.default;
+  let subrequests = 0;
+
   try {
-    const priority = Array.of(12, 15, 14, 13, 11, 16, 10, 17, 9, 18, 8, 19, 7, 20, 6, 21, 5, 22, 4, 23, 3, 24, 2, 1);
     let found = null;
-    let callsUsed = 0;
-    for (let i = 0; i < priority.length; i += 4) {
-      const batch = priority.slice(i, i + 4);
-      callsUsed += batch.length;
-      const results = await Promise.all(batch.map(num => checkServer(num, gameId)));
-      found = results.find(r => r !== null);
-      if (found) break;
+
+    // 1. Check cache voor het servernummer van deze game
+    const serverCacheKey = new Request("https://cache.internal" + gameId);
+    const cachedServerResp = await cache.match(serverCacheKey);
+    if (cachedServerResp) {
+      const cachedData = await cachedServerResp.json();
+      subrequests++;
+      found = await checkServer(cachedData.serverNum, gameId);
     }
+
+    // 2. Zo niet gecachet, zoek in batches van 4 servers
     if (!found) {
+      const priority = Array.of(12, 15, 14, 13, 11, 16, 10, 17, 9, 18, 8, 19, 7, 20, 6, 21, 5, 22, 4, 23, 3, 24, 2, 1);
+      for (let i = 0; i < priority.length; i += 4) {
+        const batch = priority.slice(i, i + 4);
+        subrequests += batch.length;
+        const results = await Promise.all(batch.map(num => checkServer(num, gameId)));
+        found = results.find(r => r !== null);
+        if (found) {
+          await cache.put(serverCacheKey, new Response(JSON.stringify({ serverNum: found.serverNum }), {
+            headers: { "Cache-Control": "max-age=86400" }
+          }));
+          break;
+        }
+      }
+    }
+
+    if (!found) {
+      subrequests++;
       await sendDiscordText(appId, token, "Could not fetch lobby data for Game ID " + gameId + ".");
       return;
     }
-    const rawPlayers = extractRawPlayers(found.data);
-    const maxProf = Math.max(0, Math.min(50, 48 - callsUsed));
-    const capped = rawPlayers.slice(0, 50);
-    const profBatch = capped.slice(0, maxProf);
-    const profiles = await Promise.all(profBatch.map(p => fetchPlayerProfile(found.serverNum, gameId, p.siteUserID || p.userID)));
-    const enriched = capped.map((p, idx) => ({ name: String(p.name || "Unknown"), ...parseStatNumbers(p, profiles.at(idx)) }));
-    enriched.sort((a, b) => b.kd - a.kd);
 
-    const svg = buildLobbySvg(gameId, enriched, rawPlayers.length);
-    const totalHeight = 104 + enriched.length * 26 + 24;
-    const pngResp = await fetch(new URL("/chart", "https://quickchart.io").toString(), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ format: "png", width: 940, height: totalHeight, backgroundColor: "#0f131a", chart: svg })
-    });
-    if (pngResp.ok) {
-      const pngBuffer = await pngResp.arrayBuffer();
-      if (pngBuffer.byteLength > 200) {
-        await sendDiscordImage(appId, token, pngBuffer, "lobby_" + gameId + ".png", "**Conflict of Nations Lobby View — Game ID: " + gameId + " (" + rawPlayers.length + " Active Players)**");
-        return;
+    const rawPlayers = extractRawPlayers(found.data);
+    const capped = rawPlayers.slice(0, 50);
+
+    // 3. Haal spelerprofielen op uit cache of API (binnen limiet van 50 subrequests)
+    const MAX_ALLOWED_SUBREQUESTS = 46;
+    const profiles = new Array(capped.length).fill(null);
+    const toFetch = new Array();
+
+    for (let i = 0; i < capped.length; i++) {
+      const uid = capped.at(i).siteUserID || capped.at(i).userID;
+      if (!uid || uid <= 0) continue;
+
+      const profCacheKey = new Request("https://cache.internal" + uid);
+      const cachedProf = await cache.match(profCacheKey);
+      if (cachedProf) {
+        profiles[i] = await cachedProf.json();
+      } else {
+        toFetch.push({ index: i, uid: uid, cacheKey: profCacheKey });
       }
     }
-    let textOut = "**CONFLICT OF NATIONS LOBBY VIEW — GAME ID: " + gameId + " (" + rawPlayers.length + " ACTIVE PLAYERS)**\n";
-    enriched.slice(0, 35).forEach((p, i) => {
-      textOut += String(i + 1).padEnd(3) + " | " + p.name.padEnd(18) + " | K/D: " + p.kd.toFixed(2) + " | WIN: " + p.winrate + "% | LVL: " + p.level + "\n";
-    });
-    await sendDiscordText(appId, token, textOut.slice(0, 1950));
+
+    const budget = Math.max(0, MAX_ALLOWED_SUBREQUESTS - subrequests);
+    const batchToFetch = toFetch.slice(0, budget);
+    subrequests += batchToFetch.length;
+
+    await Promise.all(batchToFetch.map(async (item) => {
+      const prof = await fetchPlayerProfile(found.serverNum, gameId, item.uid);
+      if (prof) {
+        profiles[item.index] = prof;
+        await cache.put(item.cacheKey, new Response(JSON.stringify(prof), {
+          headers: { "Cache-Control": "max-age=3600" }
+        }));
+      }
+    }));
+
+    const enriched = capped.map((p, idx) => ({
+      name: String(p.name || "Unknown"),
+      ...parseStatNumbers(p, profiles.at(idx))
+    }));
+    enriched.sort((a, b) => b.kd - a.kd);
+
+    // 4. Zet SVG om naar PNG via QuickChart
+    const svg = buildLobbySvg(gameId, enriched, rawPlayers.length);
+    let imageSent = false;
+
+    if (subrequests <= 48) {
+      subrequests++;
+      try {
+        const pngResp = await fetch(new URL("/svg", "https://quickchart.io").toString(), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ svg: svg, format: "png" })
+        });
+        if (pngResp.ok) {
+          const pngBuffer = await pngResp.arrayBuffer();
+          if (pngBuffer.byteLength > 200) {
+            await sendDiscordImage(
+              appId,
+              token,
+              pngBuffer,
+              "lobby_" + gameId + ".png",
+              "**Conflict of Nations Lobby View — Game ID: " + gameId + " (" + rawPlayers.length + " Active Players)**"
+            );
+            imageSent = true;
+          }
+        }
+      } catch (imgErr) {}
+    }
+
+    // 5. Fallback naar tekstlijst als afbeelding niet lukt
+    if (!imageSent) {
+      let textOut = "**CONFLICT OF NATIONS LOBBY VIEW — GAME ID: " + gameId + " (" + rawPlayers.length + " ACTIVE PLAYERS)**\n```\n";
+      for (let i = 0; i < enriched.length; i++) {
+        const p = enriched.at(i);
+        const line = String(i + 1).padEnd(2) + " | " + p.name.slice(0, 16).padEnd(16) + " | K/D: " + p.kd.toFixed(2).padEnd(4) + " | WIN: " + String(p.winrate).padStart(2) + "% | LVL: " + p.level + "\n";
+        if (textOut.length + line.length > 1940) break;
+        textOut += line;
+      }
+      textOut += "```";
+      await sendDiscordText(appId, token, textOut);
+    }
   } catch (fatalErr) {
-    await sendDiscordText(appId, token, "Worker error: " + String(fatalErr).slice(0, 200));
+    try {
+      await sendDiscordText(appId, token, "Worker error: " + String(fatalErr).slice(0, 200));
+    } catch (e) {}
   }
 }
 
 export default {
   async fetch(request, env, ctx) {
-    if (request.method !== "POST") return new Response("ConWW3 Bot Worker is active!", { status: 200 });
+    if (request.method !== "POST") {
+      return new Response("ConWW3 Bot Worker is active!", { status: 200 });
+    }
     const bodyText = await request.text();
-    if (!(await verifyDiscordSignature(request, bodyText))) return new Response("Invalid request signature", { status: 401 });
+    if (!(await verifyDiscordSignature(request, bodyText))) {
+      return new Response("Invalid request signature", { status: 401 });
+    }
     const interaction = JSON.parse(bodyText);
-    if (interaction.type === 1) return new Response(JSON.stringify({ type: 1 }), { headers: { "Content-Type": "application/json" } });
+    if (interaction.type === 1) {
+      return new Response(JSON.stringify({ type: 1 }), {
+        headers: { "Content-Type": "application/json" }
+      });
+    }
     if (interaction.type === 2 && interaction.data?.name === "lobby") {
       const cleanId = String(interaction.data.options?.at(0)?.value || "").replace(/\D/g, "");
-      if (!cleanId) return new Response(JSON.stringify({ type: 4, data: { content: "Please enter a valid Game ID number, e.g. /lobby 10956179." } }), { headers: { "Content-Type": "application/json" } });
+      if (!cleanId) {
+        return new Response(JSON.stringify({
+          type: 4,
+          data: { content: "Please enter a valid Game ID number, e.g. /lobby 10956179." }
+        }), { headers: { "Content-Type": "application/json" } });
+      }
       ctx.waitUntil(fetchAndRespond(interaction.application_id, interaction.token, cleanId));
-      return new Response(JSON.stringify({ type: 5 }), { headers: { "Content-Type": "application/json" } });
+      return new Response(JSON.stringify({ type: 5 }), {
+        headers: { "Content-Type": "application/json" }
+      });
     }
     return new Response("Unknown command", { status: 400 });
   }
 };
+
 
 
 
