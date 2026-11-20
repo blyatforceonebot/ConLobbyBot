@@ -37,8 +37,21 @@ async function verifyDiscordSignature(request, bodyText) {
   return false;
 }
 
+async function sendDiscordFollowup(appId, token, content) {
+  const baseUrl = "https://" + "://discord.com";
+  const webhookUrl = `${baseUrl}${appId}/${token}/messages/@original`;
+  await fetch(webhookUrl, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      "User-Agent": "DiscordBot (https://workers.dev, 1.0)"
+    },
+    body: JSON.stringify({ content })
+  });
+}
+
 async function checkServer(serverNum, gameId) {
-  const url = `https://congs${serverNum}://`;
+  const url = "https://" + `congs${serverNum}://`;
   const payload = {
     "@c": "ultshared.action.UltUpdateGameStateAction",
     "requestID": 1,
@@ -108,7 +121,6 @@ function extractPlayers(data) {
 }
 
 async function fetchAndRespond(appId, token, gameId) {
-  const webhookUrl = `https://discord.com{appId}/${token}/messages/@original`;
   try {
     const priority = Array.of(12, 15, 14, 13, 11, 16, 10, 17, 9, 18, 8, 19, 7, 20, 6, 21, 5, 22, 4, 23, 3, 24, 2, 1);
     let foundData = null;
@@ -130,25 +142,17 @@ async function fetchAndRespond(appId, token, gameId) {
     }
 
     if (!foundData) {
-      await fetch(webhookUrl, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          content: `Could not fetch lobby data for Game ID \`${gameId}\`.\nDebug: \`${lastDebug.slice(0, 180)}\``
-        })
-      });
+      await sendDiscordFollowup(
+        appId,
+        token,
+        `Could not fetch lobby data for Game ID \`${gameId}\`.\nDebug: \`${lastDebug.slice(0, 180)}\``
+      );
       return;
     }
 
     const players = extractPlayers(foundData);
     if (players.length === 0) {
-      await fetch(webhookUrl, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          content: `No active human players found in Game ID \`${gameId}\`.`
-        })
-      });
+      await sendDiscordFollowup(appId, token, `No active human players found in Game ID \`${gameId}\`.`);
       return;
     }
 
@@ -169,20 +173,9 @@ async function fetchAndRespond(appId, token, gameId) {
     });
 
     const content = `**CONFLICT OF NATIONS LOBBY VIEW — GAME ID: ${gameId} (${players.length} ACTIVE PLAYERS)**\n\`\`\`\n${table.slice(0, 1850)}\n\`\`\``;
-
-    await fetch(webhookUrl, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content })
-    });
+    await sendDiscordFollowup(appId, token, content);
   } catch (fatalErr) {
-    await fetch(webhookUrl, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        content: `Worker error: \`${String(fatalErr).slice(0, 200)}\``
-      })
-    });
+    await sendDiscordFollowup(appId, token, `Worker error: \`${String(fatalErr).slice(0, 200)}\``);
   }
 }
 
@@ -228,6 +221,7 @@ export default {
     return new Response("Unknown command", { status: 400 });
   }
 };
+
 
 
 
