@@ -86,48 +86,6 @@ async function loginBytro(env) {
   }
   return { error: info.slice(0, 28) || "FAIL" };
 }
-
-
-  let diag = "";
-  for (const c of candidates) {
-    try {
-      const resp = await fetch(c.url, {
-        method: "POST",
-        redirect: "manual",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-          "X-Requested-With": "XMLHttpRequest",
-          "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15",
-          "Origin": "https://conflictnations.com",
-          "Referer": "https://conflictnations.com/"
-        },
-        body: c.body
-      });
-      const cookies = typeof resp.headers.getSetCookie === "function"
-        ? resp.headers.getSetCookie().join("; ")
-        : (resp.headers.get("set-cookie") || "");
-      const text = await resp.text();
-      const all = cookies + "\n" + text;
-
-      const uidMatch = all.match(/(?:siteUserID|userID|fe_typo_user|uid)["'=:\s]+(\d{5,12})/i);
-      const authMatch = all.match(/(?:userAuth|auth|uberAuth|token)["'=:\s]+([a-f0-9]{32,40})/i) || all.match(/([a-f0-9]{40})/i);
-      const verMatch = all.match(/(?:version|clientVersion)["'=:\s]+(\d{3,6})/i);
-
-      if (uidMatch && authMatch) {
-        return {
-          siteUserID: Number(uidMatch.at(1)),
-          userAuth: authMatch.at(1),
-          version: verMatch ? Number(verMatch.at(1)) : 420
-        };
-      }
-      const cleanTxt = text.replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim().slice(0, 18);
-      diag += resp.status + "(" + cleanTxt + ")|";
-    } catch (e) {
-      diag += "E|";
-    }
-  }
-  return { error: diag.slice(0, 32) || "FAIL" };
-}
 async function checkServer(serverNum, gameId, session) {
   const validSession = session && session.siteUserID ? session : null;
   const url = new URL("/", "https://congs" + serverNum + ".c.bytro.com").toString();
@@ -459,6 +417,8 @@ export default {
     return new Response("Unknown command", { status: 400 });
   }
 };
+
+
 
 
 
