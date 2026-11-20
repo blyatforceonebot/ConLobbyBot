@@ -63,7 +63,7 @@ async function loginBytro(env) {
     form.set("logintype", "login");
     form.set("pid", "1");
 
-    const resp = await fetch("https://conflictnations.com", {
+    const resp1 = await fetch("https://conflictnations.com", {
       method: "POST",
       redirect: "manual",
       headers: {
@@ -75,9 +75,32 @@ async function loginBytro(env) {
       body: form.toString()
     });
 
-    const cookieHeader = resp.headers.get("set-cookie") || "";
-    const bodyText = await resp.text();
-    const combined = cookieHeader + "\n" + bodyText;
+    const loc1 = resp1.headers.get("location") || "";
+    const cookiesList = typeof resp1.headers.getSetCookie === "function"
+      ? resp1.headers.getSetCookie()
+      : Array.of(resp1.headers.get("set-cookie") || "");
+    const cookiePairs = cookiesList
+      .map(c => String(c).split(";").at(0).trim())
+      .filter(Boolean)
+      .join("; ");
+
+    let combined = loc1 + "\n" + cookiesList.join("\n") + "\n" + (await resp1.text());
+
+    if (loc1 && cookiePairs) {
+      const nextUrl = new URL(loc1, "https://conflictnations.com").toString();
+      const resp2 = await fetch(nextUrl, {
+        method: "GET",
+        headers: {
+          "Cookie": cookiePairs,
+          "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15",
+          "Referer": "https://conflictnations.com/"
+        }
+      });
+      const cookies2 = typeof resp2.headers.getSetCookie === "function"
+        ? resp2.headers.getSetCookie().join("\n")
+        : (resp2.headers.get("set-cookie") || "");
+      combined += "\n" + cookies2 + "\n" + (await resp2.text());
+    }
 
     const uidMatch = combined.match(/(?:siteUserID|userID|fe_typo_user|uid)["'=:\s]+(\d{5,12})/i);
     const authMatch = combined.match(/(?:userAuth|auth|uberAuth|token)["'=:\s]+([a-f0-9]{32,40})/i) || combined.match(/([a-f0-9]{40})/i);
@@ -91,8 +114,8 @@ async function loginBytro(env) {
       };
     }
 
-    const snippet = (cookieHeader || bodyText.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ")).trim().slice(0, 45);
-    return { error: resp.status + ":" + (snippet || "empty") };
+    const cookieNames = cookiesList.map(c => String(c).split("=").at(0).trim()).filter(Boolean).join(",");
+    return { error: "302:" + (cookieNames || loc1.slice(0, 25) || "NONE") };
   } catch (e) {
     return { error: "ERR" };
   }
