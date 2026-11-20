@@ -43,7 +43,7 @@ async function sendDiscordImage(appId, token, caption, pngBuffer) {
   const path = Array.of("api", "v10", "webhooks", appId, token, "messages", "@original").join("/");
   const form = new FormData();
   form.append("payload_json", JSON.stringify({ content: caption }));
-  form.append("files", new Blob([pngBuffer], { type: "image/png" }), "lobby.png");
+  form.append("files", new Blob(Array.of(pngBuffer), { type: "image/png" }), "lobby.png");
   await fetch(new URL(path, "https://discord.com").toString(), {
     method: "PATCH",
     headers: { "User-Agent": "DiscordBot (https://workers.dev, 1.0)" },
@@ -85,9 +85,9 @@ async function loginBytro(env) {
 
     if (uidMatch && authMatch) {
       return {
-        siteUserID: Number(uidMatch),
-        userAuth: authMatch,
-        version: verMatch ? Number(verMatch) : 420
+        siteUserID: Number(uidMatch.at(1)),
+        userAuth: authMatch.at(1),
+        version: verMatch ? Number(verMatch.at(1)) : 420
       };
     }
 
@@ -138,7 +138,7 @@ async function checkServer(serverNum, gameId, session) {
 }
 
 async function fetchUserDetailsBatch(serverNum, gameId, siteUserIDs, session) {
-  const statsMap = {};
+  const statsMap = new Map();
   if (!session || !session.siteUserID || siteUserIDs.length === 0) return statsMap;
   const url = new URL("/", "https://congs" + serverNum + ".c.bytro.com").toString();
   const subActions = siteUserIDs.map((uid, idx) => ({
@@ -176,8 +176,8 @@ async function fetchUserDetailsBatch(serverNum, gameId, siteUserIDs, session) {
     });
     if (!resp.ok) return statsMap;
     const data = await resp.json();
-    const results = data?.result?.actions || data?.result?.results || [];
-    const list = Array.isArray(results) ? results : [];
+    const results = data?.result?.actions || data?.result?.results || new Array();
+    const list = Array.isArray(results) ? results : new Array();
     for (const item of list) {
       const u = item?.user || item?.result || item;
       const uid = Number(u?.userID ?? u?.siteUserID ?? u?.id ?? 0);
@@ -190,26 +190,26 @@ async function fetchUserDetailsBatch(serverNum, gameId, siteUserIDs, session) {
       const winPct = played > 0 ? Math.round((won / played) * 100) + "%" : "0%";
       const level = Number(u?.rank ?? u?.level ?? u?.userLevel ?? 0);
       const hasSC = Boolean(u?.securityCouncil || u?.premium || u?.isPremium || u?.highCommand);
-      statsMap[uid] = { kd, winPct, level, sc: hasSC ? "Y" : "N" };
+      statsMap.set(uid, { kd, winPct, level, sc: hasSC ? "Y" : "N" });
     }
   } catch (e) {}
   return statsMap;
 }
 
-const FONT5X7 = {
-  " ":, "!":, "#":, "%":,
-  "(":, ")":, "+":, ",":,
-  "-":, ".":, "/":, ":":,
-  "0":, "1":, "2":, "3":,
-  "4":, "5":, "6":, "7":,
-  "8":, "9":, "=":, "?":,
-  "A":, "B":, "C":, "D":,
-  "E":, "F":, "G":, "H":,
-  "I":, "J":, "K":, "L":,
-  "M":, "N":, "O":, "P":,
-  "Q":, "R":, "S":, "T":,
-  "U":, "V":, "W":, "X":,
-  "Y":, "Z":, "_":, "|": [0,0,127,0,0]
+const FONT_HEX = {
+  " ": "0000000000", "!": "00005f0000", "#": "147f147f14", "%": "2313086462",
+  "(": "001c224100", ")": "0041221c00", "+": "08083e0808", ",": "0050300000",
+  "-": "0808080808", ".": "0060600000", "/": "2010080402", ":": "0036360000",
+  "0": "3e5149453e", "1": "00427f4000", "2": "4261514946", "3": "2141454b31",
+  "4": "1814127f10", "5": "2745454539", "6": "3c4a494930", "7": "0171090503",
+  "8": "3649494936", "9": "064949291e", "=": "1414141414", "?": "0201510906",
+  "A": "7e1111117e", "B": "7f49494936", "C": "3e41414122", "D": "7f4141221c",
+  "E": "7f49494941", "F": "7f09090901", "G": "3e4149497a", "H": "7f0808087f",
+  "I": "00417f4100", "J": "2040413f01", "K": "7f08142241", "L": "7f40404040",
+  "M": "7f020c027f", "N": "7f0408107f", "O": "3e4141413e", "P": "7f09090906",
+  "Q": "3e4151215e", "R": "7f09192946", "S": "4649494931", "T": "01017f0101",
+  "U": "3f4040403f", "V": "1f2040201f", "W": "3f4038403f", "X": "6314081463",
+  "Y": "0708700807", "Z": "6151494543", "_": "4040404040", "|": "00007f0000"
 };
 async function buildBlackLobbyPng(gameId, serverNum, players, statsMap, authStatus) {
   const maxRows = Math.min(players.length, 64);
@@ -220,11 +220,14 @@ async function buildBlackLobbyPng(gameId, serverNum, players, statsMap, authStat
   const height = headerH + maxRows * rowH + 16;
   const stride = 1 + width * 3;
   const raw = new Uint8Array(height * stride);
+  const view = new DataView(raw.buffer);
 
   function setPx(x, y, r, g, b) {
     if (x < 0 || x >= width || y < 0 || y >= height) return;
     const idx = y * stride + 1 + x * 3;
-    raw[idx] = r; raw[idx + 1] = g; raw[idx + 2] = b;
+    view.setUint8(idx, r);
+    view.setUint8(idx + 1, g);
+    view.setUint8(idx + 2, b);
   }
 
   function fillRect(x0, y0, w, h, r, g, b) {
@@ -236,9 +239,9 @@ async function buildBlackLobbyPng(gameId, serverNum, players, statsMap, authStat
   function drawText(txt, x0, y0, r, g, b) {
     const up = String(txt || "").toUpperCase();
     for (let c = 0; c < up.length; c++) {
-      const glyph = FONT5X7[up[c]] || FONT5X7[" "];
+      const hex = FONT_HEX[up.charAt(c)] || FONT_HEX[" "];
       for (let col = 0; col < 5; col++) {
-        const bits = glyph[col];
+        const bits = parseInt(hex.slice(col * 2, col * 2 + 2), 16);
         for (let row = 0; row < 7; row++) {
           if (bits & (1 << row)) {
             fillRect(x0 + c * 6 * scale + col * scale, y0 + row * scale, scale, scale, r, g, b);
@@ -261,8 +264,8 @@ async function buildBlackLobbyPng(gameId, serverNum, players, statsMap, authStat
   drawText("SC", 855, 43, 220, 220, 220);
 
   for (let i = 0; i < maxRows; i++) {
-    const p = players[i];
-    const st = statsMap[p.siteUserID] || { kd: "-", winPct: "-", level: "-", sc: "-" };
+    const p = players.at(i);
+    const st = statsMap.get(p.siteUserID) || { kd: "-", winPct: "-", level: "-", sc: "-" };
     const y = headerH + i * rowH;
     if (i % 2 === 1) fillRect(0, y, width, rowH, 14, 14, 14);
     fillRect(12, y + rowH - 1, width - 24, 1, 35, 35, 35);
@@ -287,7 +290,7 @@ async function buildBlackLobbyPng(gameId, serverNum, players, statsMap, authStat
   function crc32(buf) {
     let c = 0xffffffff;
     for (let i = 0; i < buf.length; i++) {
-      c ^= buf[i];
+      c ^= buf.at(i);
       for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
     }
     return (c ^ 0xffffffff) >>> 0;
@@ -297,7 +300,7 @@ async function buildBlackLobbyPng(gameId, serverNum, players, statsMap, authStat
     const out = new Uint8Array(12 + data.length);
     const dv = new DataView(out.buffer);
     dv.setUint32(0, data.length);
-    for (let i = 0; i < 4; i++) out[4 + i] = type.charCodeAt(i);
+    for (let i = 0; i < 4; i++) dv.setUint8(4 + i, type.charCodeAt(i));
     out.set(data, 8);
     dv.setUint32(8 + data.length, crc32(out.subarray(4, 8 + data.length)));
     return out;
@@ -307,9 +310,10 @@ async function buildBlackLobbyPng(gameId, serverNum, players, statsMap, authStat
   const idv = new DataView(ihdr.buffer);
   idv.setUint32(0, width);
   idv.setUint32(4, height);
-  ihdr[8] = 8; ihdr[9] = 2;
+  idv.setUint8(8, 8);
+  idv.setUint8(9, 2);
 
-  const sig = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+  const sig = new Uint8Array(Array.of(137, 80, 78, 71, 13, 10, 26, 10));
   const c1 = chunk("IHDR", ihdr);
   const c2 = chunk("IDAT", compBuf);
   const c3 = chunk("IEND", new Uint8Array(0));
@@ -424,6 +428,9 @@ export default {
     return new Response("Unknown command", { status: 400 });
   }
 };
+
+
+
 
 
 
