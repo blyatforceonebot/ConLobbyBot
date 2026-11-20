@@ -213,38 +213,22 @@ async function fetchWithTimeout(url, options, ms = 4500) {
 }
 
 async function fetchAndRespond(appId, token, gameId) {
-  const cache = caches.default;
   let subrequests = 0;
 
   try {
     let found = null;
+    const priority = Array.of(12, 15, 14, 13, 11, 16, 10, 17, 9, 18, 8, 19, 7, 20, 6, 21, 5, 22, 4, 23, 3, 24, 2, 1);
 
-    const serverCacheKey = new Request("https://cache.internal" + gameId);
-    const cachedServerResp = await cache.match(serverCacheKey);
-    if (cachedServerResp) {
-      const cachedData = await cachedServerResp.json();
-      subrequests++;
-      found = await checkServer(cachedData.serverNum, gameId);
+    for (let i = 0; i < priority.length; i += 6) {
+      const batch = priority.slice(i, i + 6);
+      subrequests += batch.length;
+      const results = await Promise.all(batch.map(num => checkServer(num, gameId)));
+      found = results.find(r => r !== null);
+      if (found) break;
     }
 
     if (!found) {
-      const priority = Array.of(12, 15, 14, 13, 11, 16, 10, 17, 9, 18, 8, 19, 7, 20, 6, 21, 5, 22, 4, 23, 3, 24, 2, 1);
-      for (let i = 0; i < priority.length; i += 6) {
-        const batch = priority.slice(i, i + 6);
-        subrequests += batch.length;
-        const results = await Promise.all(batch.map(num => checkServer(num, gameId)));
-        found = results.find(r => r !== null);
-        if (found) {
-          await cache.put(serverCacheKey, new Response(JSON.stringify({ serverNum: found.serverNum }), {
-            headers: { "Cache-Control": "max-age=86400" }
-          }));
-          break;
-        }
-      }
-    }
-
-    if (!found) {
-      await sendDiscordText(appId, token, "Could not find Game ID " + gameId + " on servers 1-24 (or Bytro token expired).");
+      await sendDiscordText(appId, token, "Could not find Game ID " + gameId + " on servers 1-24.");
       return;
     }
 
@@ -255,35 +239,22 @@ async function fetchAndRespond(appId, token, gameId) {
     }
 
     const capped = rawPlayers.slice(0, 50);
-    const MAX_ALLOWED_SUBREQUESTS = 46;
+
+    // Reserveer altijd 6 subrequests voor QuickChart + Discord (limiet is 50)
+    const maxProfCalls = Math.max(0, 44 - subrequests);
     const profiles = new Array(capped.length).fill(null);
     const toFetch = new Array();
 
     for (let i = 0; i < capped.length; i++) {
       const uid = capped.at(i).siteUserID || capped.at(i).userID;
-      if (!uid || uid <= 0) continue;
-
-      const profCacheKey = new Request("https://cache.internal" + uid);
-      const cachedProf = await cache.match(profCacheKey);
-      if (cachedProf) {
-        profiles[i] = await cachedProf.json();
-      } else {
-        toFetch.push({ index: i, uid: uid, cacheKey: profCacheKey });
+      if (uid && uid > 0 && toFetch.length < maxProfCalls) {
+        toFetch.push({ index: i, uid: uid });
       }
     }
 
-    const budget = Math.max(0, MAX_ALLOWED_SUBREQUESTS - subrequests);
-    const batchToFetch = toFetch.slice(0, budget);
-    subrequests += batchToFetch.length;
-
-    await Promise.all(batchToFetch.map(async (item) => {
-      const prof = await fetchPlayerProfile(found.serverNum, gameId, item.uid);
-      if (prof) {
-        profiles[item.index] = prof;
-        await cache.put(item.cacheKey, new Response(JSON.stringify(prof), {
-          headers: { "Cache-Control": "max-age=3600" }
-        }));
-      }
+    subrequests += toFetch.length;
+    await Promise.all(toFetch.map(async (item) => {
+      profiles[item.index] = await fetchPlayerProfile(found.serverNum, gameId, item.uid);
     }));
 
     const enriched = capped.map((p, idx) => ({
@@ -295,28 +266,26 @@ async function fetchAndRespond(appId, token, gameId) {
     const svg = buildLobbySvg(gameId, enriched, rawPlayers.length);
     let imageSent = false;
 
-    if (subrequests <= 47) {
-      try {
-        const pngResp = await fetchWithTimeout(new URL("/svg", "https://quickchart.io").toString(), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ svg: svg, format: "png" })
-        }, 5000);
-        if (pngResp.ok) {
-          const pngBuffer = await pngResp.arrayBuffer();
-          if (pngBuffer.byteLength > 200) {
-            await sendDiscordImage(
-              appId,
-              token,
-              pngBuffer,
-              "lobby_" + gameId + ".png",
-              "**Conflict of Nations Lobby View — Game ID: " + gameId + " (" + rawPlayers.length + " Active Players)**"
-            );
-            imageSent = true;
-          }
+    try {
+      const pngResp = await fetchWithTimeout(new URL("/svg", "https://quickchart.io").toString(), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ svg: svg, format: "png" })
+      }, 5000);
+      if (pngResp.ok) {
+        const pngBuffer = await pngResp.arrayBuffer();
+        if (pngBuffer.byteLength > 200) {
+          await sendDiscordImage(
+            appId,
+            token,
+            pngBuffer,
+            "lobby_" + gameId + ".png",
+            "**Conflict of Nations Lobby View — Game ID: " + gameId + " (" + rawPlayers.length + " Active Players)**"
+          );
+          imageSent = true;
         }
-      } catch (imgErr) {}
-    }
+      }
+    } catch (imgErr) {}
 
     if (!imageSent) {
       let textOut = "**CONFLICT OF NATIONS LOBBY VIEW — GAME ID: " + gameId + " (" + rawPlayers.length + " ACTIVE PLAYERS)**\n```\n";
@@ -330,7 +299,9 @@ async function fetchAndRespond(appId, token, gameId) {
       await sendDiscordText(appId, token, textOut);
     }
   } catch (fatalErr) {
-    await sendDiscordText(appId, token, "Worker error: " + String(fatalErr).slice(0, 200));
+    try {
+      await sendDiscordText(appId, token, "Worker error: " + String(fatalErr).slice(0, 200));
+    } catch (e) {}
   }
 }
 
@@ -365,4 +336,5 @@ export default {
     return new Response("Unknown command", { status: 400 });
   }
 };
+
 
