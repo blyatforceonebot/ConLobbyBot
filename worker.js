@@ -172,36 +172,16 @@ function buildLobbySvg(gameId, players, totalCount) {
   players.forEach((p, idx) => {
     const y = headH + idx * rowH;
     const bg = idx % 2 === 0 ? "#161b26" : "#1c2331";
-    const kdColor = p.kd >= 2.0 ? "#facc15" : p.kd >= 1.0 ? "#38bdf8" : "#e2e8f0";
-    rowsSvg += '<rect x="12" y="' + y + '" width="' + (width - 24) + '" height="' + (rowH - 2) + '" rx="4" fill="' + bg + '"/>';
-    rowsSvg += '<text x="26" y="' + (y + 17) + '" fill="#94a3b8" font-size="13">' + (idx + 1) + '</text>';
-    if (p.alliance) {
-      rowsSvg += '<rect x="62" y="' + (y + 4) + '" width="165" height="' + (rowH - 10) + '" rx="4" fill="#3f232c"/>';
-      rowsSvg += '<text x="70" y="' + (y + 17) + '" fill="#fda4af" font-size="12" font-weight="bold">' + escapeXml(p.alliance.slice(0, 20)) + '</text>';
-    }
-    rowsSvg += '<text x="242" y="' + (y + 17) + '" fill="#ffffff" font-size="13" font-weight="bold">' + escapeXml(p.name.slice(0, 20)) + '</text>';
-    rowsSvg += '<text x="430" y="' + (y + 17) + '" fill="' + kdColor + '" font-size="13" font-weight="bold">' + p.kd.toFixed(2) + '</text>';
-    rowsSvg += '<text x="500" y="' + (y + 17) + '" fill="#cbd5e1" font-size="13">' + p.winrate + '%</text>';
-    rowsSvg += '<text x="570" y="' + (y + 17) + '" fill="#cbd5e1" font-size="13">' + p.level + '</text>';
-    rowsSvg += '<text x="630" y="' + (y + 17) + '" fill="' + (p.sc ? "#4ade80" : "#94a3b8") + '" font-size="13" font-weight="bold">' + (p.sc ? "Yes" : "No") + '</text>';
-    rowsSvg += '<text x="695" y="' + (y + 17) + '" fill="#cbd5e1" font-size="13">' + p.joined + '</text>';
-    rowsSvg += '<text x="775" y="' + (y + 17) + '" fill="#cbd5e1" font-size="13">' + p.solo + '</text>';
-    rowsSvg += '<text x="845" y="' + (y + 17) + '" fill="#cbd5e1" font-size="13">' + p.coalition + '</text>';
-  });
-
-  return '<svg xmlns="http://w3.org" width="' + width + '" height="' + height + '" viewBox="0 0 ' + width + ' ' + height + '">' +
-    '<rect width="100%" height="100%" fill="#0f131a"/>' +
-    '<rect x="0" y="0" width="100%" height="74" fill="#18202c"/>' +
-    '<text x="24" y="28" fill="#94a3b8" font-family="sans-serif" font-size="12" font-weight="bold">CONFLICT OF NATIONS LOBBY VIEW</text>' +
-    '<text x="24" y="54" fill="#ffffff" font-family="sans-serif" font-size="20" font-weight="bold">GAME ID: ' + escapeXml(gameId) + '  •  ' + totalCount + ' ACTIVE PLAYERS (SHOWING ' + players.length + ')</text>' +
-    '<g font-family="sans-serif" font-size="11" font-weight="bold" fill="#94a3b8">' +
-      '<text x="26" y="92">#</text><text x="64" y="92">ALLIANCE</text><text x="242" y="92">USERNAME</text>' +
-      '<text x="430" y="92">K/D</text><text x="500" y="92">WIN%</text><text x="570" y="92">LVL</text>' +
-      '<text x="630" y="92">SC</text><text x="695" y="92">JOINED</text><text x="775" y="92">SOLO</text><text x="845" y="92">COALITION</text>' +
-    '</g>' +
-    '<g font-family="monospace, sans-serif">' + rowsSvg + '</g>' +
-  '</svg>';
+    async function fetchWithTimeout(url, options, ms = 4500) {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), ms);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(id);
+  }
 }
+
 async function fetchAndRespond(appId, token, gameId) {
   const cache = caches.default;
   let subrequests = 0;
@@ -209,7 +189,7 @@ async function fetchAndRespond(appId, token, gameId) {
   try {
     let found = null;
 
-    // 1. Check cache voor het servernummer van deze game
+    // 1. Check cache voor servernummer
     const serverCacheKey = new Request("https://cache.internal" + gameId);
     const cachedServerResp = await cache.match(serverCacheKey);
     if (cachedServerResp) {
@@ -218,11 +198,11 @@ async function fetchAndRespond(appId, token, gameId) {
       found = await checkServer(cachedData.serverNum, gameId);
     }
 
-    // 2. Zo niet gecachet, zoek in batches van 4 servers
+    // 2. Zoek in batches van 6 servers (sneller klaar, max 4 rondes = 24 calls)
     if (!found) {
       const priority = Array.of(12, 15, 14, 13, 11, 16, 10, 17, 9, 18, 8, 19, 7, 20, 6, 21, 5, 22, 4, 23, 3, 24, 2, 1);
-      for (let i = 0; i < priority.length; i += 4) {
-        const batch = priority.slice(i, i + 4);
+      for (let i = 0; i < priority.length; i += 6) {
+        const batch = priority.slice(i, i + 6);
         subrequests += batch.length;
         const results = await Promise.all(batch.map(num => checkServer(num, gameId)));
         found = results.find(r => r !== null);
@@ -236,15 +216,19 @@ async function fetchAndRespond(appId, token, gameId) {
     }
 
     if (!found) {
-      subrequests++;
-      await sendDiscordText(appId, token, "Could not fetch lobby data for Game ID " + gameId + ".");
+      await sendDiscordText(appId, token, "Could not find Game ID " + gameId + " on servers 1-24 (or Bytro token expired).");
       return;
     }
 
     const rawPlayers = extractRawPlayers(found.data);
+    if (rawPlayers.length === 0) {
+      await sendDiscordText(appId, token, "Game ID " + gameId + " found on server " + found.serverNum + ", but no active players were returned.");
+      return;
+    }
+
     const capped = rawPlayers.slice(0, 50);
 
-    // 3. Haal spelerprofielen op uit cache of API (binnen limiet van 50 subrequests)
+    // 3. Profielen ophalen binnen limiet van 46 subrequests
     const MAX_ALLOWED_SUBREQUESTS = 46;
     const profiles = new Array(capped.length).fill(null);
     const toFetch = new Array();
@@ -282,18 +266,17 @@ async function fetchAndRespond(appId, token, gameId) {
     }));
     enriched.sort((a, b) => b.kd - a.kd);
 
-    // 4. Zet SVG om naar PNG via QuickChart
+    // 4. Stuur direct de tekstlijst (snel & betrouwbaar) of SVG-afbeelding
     const svg = buildLobbySvg(gameId, enriched, rawPlayers.length);
     let imageSent = false;
 
-    if (subrequests <= 48) {
-      subrequests++;
+    if (subrequests <= 47) {
       try {
-        const pngResp = await fetch(new URL("/svg", "https://quickchart.io").toString(), {
+        const pngResp = await fetchWithTimeout("https://quickchart.io", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ svg: svg, format: "png" })
-        });
+        }, 5000);
         if (pngResp.ok) {
           const pngBuffer = await pngResp.arrayBuffer();
           if (pngBuffer.byteLength > 200) {
@@ -310,7 +293,6 @@ async function fetchAndRespond(appId, token, gameId) {
       } catch (imgErr) {}
     }
 
-    // 5. Fallback naar tekstlijst als afbeelding niet lukt
     if (!imageSent) {
       let textOut = "**CONFLICT OF NATIONS LOBBY VIEW — GAME ID: " + gameId + " (" + rawPlayers.length + " ACTIVE PLAYERS)**\n```\n";
       for (let i = 0; i < enriched.length; i++) {
@@ -323,9 +305,7 @@ async function fetchAndRespond(appId, token, gameId) {
       await sendDiscordText(appId, token, textOut);
     }
   } catch (fatalErr) {
-    try {
-      await sendDiscordText(appId, token, "Worker error: " + String(fatalErr).slice(0, 200));
-    } catch (e) {}
+    await sendDiscordText(appId, token, "Worker error: " + String(fatalErr).slice(0, 200));
   }
 }
 
@@ -360,8 +340,3 @@ export default {
     return new Response("Unknown command", { status: 400 });
   }
 };
-
-
-
-
-
