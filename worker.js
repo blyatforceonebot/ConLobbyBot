@@ -15,17 +15,21 @@ async function verifyDiscordSignature(request, bodyText) {
   const timestamp = request.headers.get("X-Signature-Timestamp");
   if (!signature || !timestamp) return false;
 
-  const key = await crypto.subtle.importKey(
-    "raw",
-    hexToBytes(PUBLIC_KEY),
-    { name: "NODE-ED25519", namedCurve: "NODE-ED25519" },
-    false,
-    Array.of("verify")
-  );
+  try {
+    const key = await crypto.subtle.importKey(
+      "raw",
+      hexToBytes(PUBLIC_KEY),
+      { name: "Ed25519" },
+      false,
+      Array.of("verify")
+    );
 
-  const encoder = new TextEncoder();
-  const data = encoder.encode(timestamp + bodyText);
-  return await crypto.subtle.verify("NODE-ED25519", key, hexToBytes(signature), data);
+    const encoder = new TextEncoder();
+    const data = encoder.encode(timestamp + bodyText);
+    return await crypto.subtle.verify("Ed25519", key, hexToBytes(signature), data);
+  } catch (e) {
+    return false;
+  }
 }
 
 async function checkServer(serverNum, gameId) {
@@ -204,4 +208,5 @@ export default {
     return new Response("Unknown command", { status: 400 });
   }
 };
+
 
