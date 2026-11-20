@@ -39,62 +39,55 @@ async function sendDiscordText(appId, token, content) {
   });
 }
 
-async function loginBytro() {
+async function loginBytroDirect(serverNum, gameId) {
+  const url = new URL("/", "https://congs" + serverNum + ".c.bytro.com").toString();
+  const payload = {
+    "@c": "ultshared.action.UltLoginAction",
+    "requestID": 1,
+    "language": "en",
+    "userName": CON_USERNAME,
+    "password": CON_PASSWORD,
+    "rememberMe": true,
+    "version": 420,
+    "client": "con-client-mobile-portrait",
+    "siteUserID": 0,
+    "adminLevel": 0,
+    "gameID": Number(gameId),
+    "playerID": 0,
+    "rights": "chat",
+    "userAuth": "",
+    "tstamp": String(Math.floor(Date.now() / 1000))
+  };
+
   try {
-    // 1. TYPO3 felogin op Conflict of Nations
-    const loginResp = await fetch("https://conflictnations.com", {
+    const resp = await fetch(url, {
       method: "POST",
-      redirect: "manual",
       headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Origin": "https://www.conflictnations.com",
-        "Referer": "https://www.conflictnations.com/",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        "Content-Type": "application/json",
+        "Origin": "https://conflictnations.com",
+        "Referer": "https://conflictnations.com/"
       },
-      body: new URLSearchParams({
-        user: CON_USERNAME,
-        pass: CON_PASSWORD,
-        logintype: "login",
-        pid: "306",
-        redirect_url: ""
-      }).toString()
+      body: JSON.stringify(payload)
     });
-
-    const rawCookie = loginResp.headers.get("set-cookie") || "";
-    const cookieHeader = rawCookie
-      .split(/,(?=\s*[a-zA-Z0-9_-]+=)/)
-      .map(c => c.split(";").at(0).trim())
-      .filter(Boolean)
-      .join("; ");
-
-    // 2. Haal de pagina op met de sessie-cookie om userAuth + siteUserID + version te lezen
-    const pageResp = await fetch("https://conflictnations.com", {
-      headers: {
-        "Cookie": cookieHeader,
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-      }
-    });
-    const html = await pageResp.text();
-
-    const uidMatch = html.match(/(?:siteUserID|userID)['"]?\s*[:=]\s*['"]?(\d{5,})/i);
-    const authMatch = html.match(/(?:userAuth|authHash)['"]?\s*[:=]\s*['"]([a-f0-9]{32,64})['"]/i);
-    const verMatch = html.match(/(?:version|clientVersion)['"]?\s*[:=]\s*['"]?(\d{3,5})/i);
+    const text = await resp.text();
+    const uidMatch = text.match(/(?:siteUserID|userID)['"]?\s*[:=]\s*(\d{5,})/i);
+    const authMatch = text.match(/(?:userAuth|authHash)['"]?\s*[:=]\s*['"]([a-f0-9]{32,64})['"]/i);
 
     if (uidMatch && authMatch) {
       return {
         siteUserID: Number(uidMatch.at(1)),
         userAuth: authMatch.at(1),
-        version: verMatch ? Number(verMatch.at(1)) : 420,
-        loggedIn: true
+        version: 420,
+        loggedIn: true,
+        raw: "ok"
       };
     }
-
     return {
       siteUserID: 91668627,
       userAuth: "5a1bbe76f2d8d122d537f65f99aa57dee37d91b1",
-      version: verMatch ? Number(verMatch.at(1)) : 420,
+      version: 420,
       loggedIn: false,
-      cookieLen: cookieHeader.length
+      raw: text.slice(0, 110)
     };
   } catch (e) {
     return {
@@ -102,12 +95,12 @@ async function loginBytro() {
       userAuth: "5a1bbe76f2d8d122d537f65f99aa57dee37d91b1",
       version: 420,
       loggedIn: false,
-      cookieLen: -1
+      raw: String(e).slice(0, 100)
     };
   }
 }
 
-async function checkServer(serverNum, gameId, auth) {
+async function checkServer(serverNum, gameId) {
   const url = new URL("/", "https://congs" + serverNum + ".c.bytro.com").toString();
   const payload = {
     "@c": "ultshared.action.UltUpdateGameStateAction",
@@ -117,14 +110,14 @@ async function checkServer(serverNum, gameId, auth) {
     "actions": Array.of("java.util.LinkedList", new Array()),
     "stateIDs": null,
     "tstamps": null,
-    "version": auth.version,
+    "version": 420,
     "client": "con-client-mobile-portrait",
-    "siteUserID": auth.siteUserID,
+    "siteUserID": 91668627,
     "adminLevel": 0,
     "gameID": Number(gameId),
     "playerID": 0,
     "rights": "chat",
-    "userAuth": auth.userAuth,
+    "userAuth": "5a1bbe76f2d8d122d537f65f99aa57dee37d91b1",
     "tstamp": String(Math.floor(Date.now() / 1000))
   };
   try {
@@ -212,16 +205,13 @@ async function fetchAndRespond(appId, token, gameId) {
   let subrequests = 0;
 
   try {
-    subrequests += 2;
-    const auth = await loginBytro();
-
     let found = null;
     const priority = Array.of(12, 15, 14, 13, 11, 16, 10, 17, 9, 18, 8, 19, 7, 20, 6, 21, 5, 22, 4, 23, 3, 24, 2, 1);
 
     for (let i = 0; i < priority.length; i += 6) {
       const batch = priority.slice(i, i + 6);
       subrequests += batch.length;
-      const results = await Promise.all(batch.map(num => checkServer(num, gameId, auth)));
+      const results = await Promise.all(batch.map(num => checkServer(num, gameId)));
       found = results.find(r => r !== null);
       if (found) break;
     }
@@ -230,6 +220,10 @@ async function fetchAndRespond(appId, token, gameId) {
       await sendDiscordText(appId, token, "Could not find Game ID " + gameId + " on servers 1-24.");
       return;
     }
+
+    // Log direct in op de gevonden Bytro game-server
+    subrequests++;
+    const auth = await loginBytroDirect(found.serverNum, gameId);
 
     const rawPlayers = extractRawPlayers(found.data);
     if (rawPlayers.length === 0) {
@@ -261,8 +255,10 @@ async function fetchAndRespond(appId, token, gameId) {
     enriched.sort((a, b) => b.kd - a.kd);
 
     const firstProf = profiles.find(x => x !== null);
-    const sampleRaw = firstProf ? JSON.stringify(firstProf).slice(0, 110) : "no-prof";
-    let textOut = "**CON LOBBY " + gameId + " (Srv " + found.serverNum + " | Login:" + auth.loggedIn + " c:" + (auth.cookieLen ?? "ok") + " | v" + auth.version + ")**\n`" + sampleRaw + "`\n```\n";
+    const sampleRaw = auth.loggedIn
+      ? (firstProf ? JSON.stringify(firstProf).slice(0, 110) : "no-prof")
+      : ("loginResp: " + auth.raw);
+    let textOut = "**CON LOBBY " + gameId + " (Srv " + found.serverNum + " | Login:" + auth.loggedIn + ")**\n`" + sampleRaw + "`\n```\n";
 
     for (let i = 0; i < enriched.length; i++) {
       const p = enriched.at(i);
@@ -310,6 +306,7 @@ export default {
     return new Response("Unknown command", { status: 400 });
   }
 };
+
 
 
 
