@@ -39,21 +39,6 @@ async function sendDiscordText(appId, token, content) {
   });
 }
 
-async function sendDiscordImage(appId, token, imageBytes, filename, caption) {
-  const path = Array.of("api", "v10", "webhooks", appId, token, "messages", "@original").join("/");
-  const form = new FormData();
-  form.append("payload_json", JSON.stringify({
-    content: caption,
-    attachments: Array.of({ id: 0, filename })
-  }));
-  form.append("files", new Blob(Array.of(imageBytes), { type: "image/png" }), filename);
-  await fetch(new URL(path, "https://discord.com").toString(), {
-    method: "PATCH",
-    headers: { "User-Agent": "DiscordBot (https://workers.dev, 1.0)" },
-    body: form
-  });
-}
-
 async function checkServer(serverNum, gameId) {
   const url = new URL("/", "https://congs" + serverNum + ".c.bytro.com").toString();
   const payload = {
@@ -131,17 +116,15 @@ function parseStatNumbers(p, prof) {
   const res = prof?.result || prof || {};
   const u = res.userDetails || res.user || res.profile || res;
   const stats = u.stats || res.stats || p.stats || {};
-  const kills = Number(u.kills ?? stats.kills ?? p.kills ?? 0);
-  const deaths = Number(u.deaths ?? stats.deaths ?? p.deaths ?? 0);
+  const kills = Number(u.kills ?? u.killsVsPlayers ?? stats.kills ?? p.kills ?? 0);
+  const deaths = Number(u.deaths ?? u.deathsVsPlayers ?? stats.deaths ?? p.deaths ?? 0);
   const kd = Number(u.kdRatio ?? stats.kdRatio ?? p.kdRatio ?? (deaths > 0 ? kills / deaths : kills) ?? 0);
   const joined = Number(u.gamesJoined ?? stats.gamesJoined ?? p.gamesJoined ?? 0);
   const solo = Number(u.soloWins ?? stats.soloWins ?? p.soloWins ?? 0);
   const coalition = Number(u.coalitionWins ?? stats.coalitionWins ?? p.coalitionWins ?? 0);
   const winrate = Number(u.winRate ?? stats.winRate ?? p.winRate ?? (joined > 0 ? Math.round(((solo + coalition) / joined) * 100) : 0));
   const level = Number(u.level ?? u.rank ?? stats.level ?? p.level ?? 1);
-  const sc = Boolean(u.securityCouncil ?? u.isSecurityCouncil ?? p.securityCouncil ?? false);
-  const alliance = String(u.allianceName ?? u.allianceTag ?? p.allianceName ?? p.alliance ?? "");
-  return { kd, winrate, level, sc, joined, solo, coalition, alliance };
+  return { kd, winrate, level };
 }
 
 function extractRawPlayers(data) {
@@ -157,61 +140,6 @@ function extractRawPlayers(data) {
   }
   return list;
 }
-
-function escapeXml(str) {
-  return String(str)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-function buildLobbySvg(gameId, players, totalCount) {
-  const rowH = 26, headH = 104, width = 940, height = headH + players.length * rowH + 24;
-  let rowsSvg = "";
-  players.forEach((p, idx) => {
-    const y = headH + idx * rowH;
-    const bg = idx % 2 === 0 ? "#161b26" : "#1c2331";
-    const kdColor = p.kd >= 2.0 ? "#facc15" : p.kd >= 1.0 ? "#38bdf8" : "#e2e8f0";
-    rowsSvg += '<rect x="12" y="' + y + '" width="' + (width - 24) + '" height="' + (rowH - 2) + '" rx="4" fill="' + bg + '"/>';
-    rowsSvg += '<text x="26" y="' + (y + 17) + '" fill="#94a3b8" font-size="13">' + (idx + 1) + '</text>';
-    if (p.alliance) {
-      rowsSvg += '<rect x="62" y="' + (y + 4) + '" width="165" height="' + (rowH - 10) + '" rx="4" fill="#3f232c"/>';
-      rowsSvg += '<text x="70" y="' + (y + 17) + '" fill="#fda4af" font-size="12" font-weight="bold">' + escapeXml(p.alliance.slice(0, 20)) + '</text>';
-    }
-    rowsSvg += '<text x="242" y="' + (y + 17) + '" fill="#ffffff" font-size="13" font-weight="bold">' + escapeXml(p.name.slice(0, 20)) + '</text>';
-    rowsSvg += '<text x="430" y="' + (y + 17) + '" fill="' + kdColor + '" font-size="13" font-weight="bold">' + p.kd.toFixed(2) + '</text>';
-    rowsSvg += '<text x="500" y="' + (y + 17) + '" fill="#cbd5e1" font-size="13">' + p.winrate + '%</text>';
-    rowsSvg += '<text x="570" y="' + (y + 17) + '" fill="#cbd5e1" font-size="13">' + p.level + '</text>';
-    rowsSvg += '<text x="630" y="' + (y + 17) + '" fill="' + (p.sc ? "#4ade80" : "#94a3b8") + '" font-size="13" font-weight="bold">' + (p.sc ? "Yes" : "No") + '</text>';
-    rowsSvg += '<text x="695" y="' + (y + 17) + '" fill="#cbd5e1" font-size="13">' + p.joined + '</text>';
-    rowsSvg += '<text x="775" y="' + (y + 17) + '" fill="#cbd5e1" font-size="13">' + p.solo + '</text>';
-    rowsSvg += '<text x="845" y="' + (y + 17) + '" fill="#cbd5e1" font-size="13">' + p.coalition + '</text>';
-  });
-
-  return '<svg xmlns="http://w3.org" width="' + width + '" height="' + height + '" viewBox="0 0 ' + width + ' ' + height + '">' +
-    '<rect width="100%" height="100%" fill="#0f131a"/>' +
-    '<rect x="0" y="0" width="100%" height="74" fill="#18202c"/>' +
-    '<text x="24" y="28" fill="#94a3b8" font-family="sans-serif" font-size="12" font-weight="bold">CONFLICT OF NATIONS LOBBY VIEW</text>' +
-    '<text x="24" y="54" fill="#ffffff" font-family="sans-serif" font-size="20" font-weight="bold">GAME ID: ' + escapeXml(gameId) + '  •  ' + totalCount + ' ACTIVE PLAYERS (SHOWING ' + players.length + ')</text>' +
-    '<g font-family="sans-serif" font-size="11" font-weight="bold" fill="#94a3b8">' +
-      '<text x="26" y="92">#</text><text x="64" y="92">ALLIANCE</text><text x="242" y="92">USERNAME</text>' +
-      '<text x="430" y="92">K/D</text><text x="500" y="92">WIN%</text><text x="570" y="92">LVL</text>' +
-      '<text x="630" y="92">SC</text><text x="695" y="92">JOINED</text><text x="775" y="92">SOLO</text><text x="845" y="92">COALITION</text>' +
-    '</g>' +
-    '<g font-family="monospace, sans-serif">' + rowsSvg + '</g>' +
-  '</svg>';
-}
-async function fetchWithTimeout(url, options, ms = 4500) {
-  const controller = new AbortController();
-  const id = setTimeout(() => controller.abort(), ms);
-  try {
-    return await fetch(url, { ...options, signal: controller.signal });
-  } finally {
-    clearTimeout(id);
-  }
-}
-
 async function fetchAndRespond(appId, token, gameId) {
   let subrequests = 0;
 
@@ -239,14 +167,12 @@ async function fetchAndRespond(appId, token, gameId) {
     }
 
     const capped = rawPlayers.slice(0, 50);
-
-    // Reserveer altijd 6 subrequests voor QuickChart + Discord (limiet is 50)
-    const maxProfCalls = Math.max(0, 44 - subrequests);
+    const maxProfCalls = Math.max(0, 45 - subrequests);
     const profiles = new Array(capped.length).fill(null);
     const toFetch = new Array();
 
     for (let i = 0; i < capped.length; i++) {
-      const uid = capped.at(i).siteUserID || capped.at(i).userID;
+      const uid = capped.at(i).siteUserID || capped.at(i).userID || capped.at(i).playerID;
       if (uid && uid > 0 && toFetch.length < maxProfCalls) {
         toFetch.push({ index: i, uid: uid });
       }
@@ -263,41 +189,19 @@ async function fetchAndRespond(appId, token, gameId) {
     }));
     enriched.sort((a, b) => b.kd - a.kd);
 
-    const svg = buildLobbySvg(gameId, enriched, rawPlayers.length);
-    let imageSent = false;
+    // Korte debug-regel zodat we zien op welke server hij zit en wat de eerste profiel-response bevat
+    const firstProf = profiles.find(x => x !== null);
+    const sampleRaw = firstProf ? JSON.stringify(firstProf).slice(0, 140) : ("pKeys:" + Object.keys(capped.at(0) || {}).join(","));
+    let textOut = "**CON LOBBY " + gameId + " (Srv " + found.serverNum + " | " + rawPlayers.length + "p)**\n`" + sampleRaw + "`\n```\n";
 
-    try {
-      const pngResp = await fetchWithTimeout(new URL("/svg", "https://quickchart.io").toString(), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ svg: svg, format: "png" })
-      }, 5000);
-      if (pngResp.ok) {
-        const pngBuffer = await pngResp.arrayBuffer();
-        if (pngBuffer.byteLength > 200) {
-          await sendDiscordImage(
-            appId,
-            token,
-            pngBuffer,
-            "lobby_" + gameId + ".png",
-            "**Conflict of Nations Lobby View — Game ID: " + gameId + " (" + rawPlayers.length + " Active Players)**"
-          );
-          imageSent = true;
-        }
-      }
-    } catch (imgErr) {}
-
-    if (!imageSent) {
-      let textOut = "**CONFLICT OF NATIONS LOBBY VIEW — GAME ID: " + gameId + " (" + rawPlayers.length + " ACTIVE PLAYERS)**\n```\n";
-      for (let i = 0; i < enriched.length; i++) {
-        const p = enriched.at(i);
-        const line = String(i + 1).padEnd(2) + " | " + p.name.slice(0, 16).padEnd(16) + " | K/D: " + p.kd.toFixed(2).padEnd(4) + " | WIN: " + String(p.winrate).padStart(2) + "% | LVL: " + p.level + "\n";
-        if (textOut.length + line.length > 1940) break;
-        textOut += line;
-      }
-      textOut += "```";
-      await sendDiscordText(appId, token, textOut);
+    for (let i = 0; i < enriched.length; i++) {
+      const p = enriched.at(i);
+      const line = String(i + 1).padStart(2) + " " + p.name.slice(0, 12).padEnd(12) + " KD:" + p.kd.toFixed(2) + " W:" + p.winrate + "% L:" + p.level + "\n";
+      if (textOut.length + line.length > 1950) break;
+      textOut += line;
     }
+    textOut += "```";
+    await sendDiscordText(appId, token, textOut);
   } catch (fatalErr) {
     try {
       await sendDiscordText(appId, token, "Worker error: " + String(fatalErr).slice(0, 200));
@@ -336,5 +240,6 @@ export default {
     return new Response("Unknown command", { status: 400 });
   }
 };
+
 
 
