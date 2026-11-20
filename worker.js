@@ -1,6 +1,4 @@
 const PUBLIC_KEY = "d4b2c5584aab9b59d22fcedfe90d62bbfc748e963613516db18212d40a1e32b6";
-const CON_USERNAME = "Blyatforceone";
-const CON_PASSWORD = "12345Qwerty.";
 
 function hexToBytes(hex) {
   const arr = new Uint8Array(hex.length / 2);
@@ -39,60 +37,6 @@ async function sendDiscordText(appId, token, content) {
   });
 }
 
-async function loginBytroDirect(serverNum, gameId) {
-  const url = new URL("/", "https://congs" + serverNum + ".c.bytro.com").toString();
-  const payload = {
-    "@c": "ultshared.action.UltLoginAction",
-    "requestID": 1,
-    "language": "en",
-    "userName": CON_USERNAME,
-    "password": CON_PASSWORD,
-    "rememberMe": true,
-    "version": 420,
-    "client": "con-client-mobile-portrait",
-    "siteUserID": 0,
-    "adminLevel": 0,
-    "gameID": Number(gameId),
-    "playerID": 0,
-    "rights": "chat",
-    "userAuth": "",
-    "tstamp": String(Math.floor(Date.now() / 1000))
-  };
-
-  try {
-    const resp = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Origin": "https://conflictnations.com",
-        "Referer": "https://conflictnations.com"
-      },
-      body: JSON.stringify(payload)
-    });
-    const rawCookie = resp.headers.get("set-cookie") || "";
-    const cookieHeader = rawCookie
-      .split(/,(?=\s*[a-zA-Z0-9_-]+=)/)
-      .map(c => c.split(";").at(0).trim())
-      .filter(Boolean)
-      .join("; ");
-
-    const text = await resp.text();
-    const parsed = JSON.parse(text);
-    const uidMatch = text.match(/(?:siteUserID|userID)['"]?\s*[:=]\s*(\d{5,})/i);
-    const authMatch = text.match(/(?:userAuth|authHash)['"]?\s*[:=]\s*['"]([a-f0-9]{32,64})['"]/i);
-
-    return {
-      siteUserID: uidMatch ? Number(uidMatch.at(1)) : 0,
-      userAuth: authMatch ? authMatch.at(1) : "",
-      cookie: cookieHeader,
-      loggedIn: parsed?.result === 1,
-      version: 420
-    };
-  } catch (e) {
-    return { siteUserID: 0, userAuth: "", cookie: "", loggedIn: false, version: 420 };
-  }
-}
-
 async function checkServer(serverNum, gameId) {
   const url = new URL("/", "https://congs" + serverNum + ".c.bytro.com").toString();
   const payload = {
@@ -125,63 +69,34 @@ async function checkServer(serverNum, gameId) {
     });
     if (!resp.ok) return null;
     const text = await resp.text();
-    if (text.includes("players") || text.includes("kdRatio")) {
+    if (text.includes("players") || text.includes("UltPlayerProfile")) {
       return { serverNum, data: JSON.parse(text) };
     }
   } catch (e) {}
   return null;
 }
 
-async function fetchPlayerProfile(serverNum, gameId, siteUserId, auth) {
-  if (!siteUserId || siteUserId <= 0) return null;
-  const url = new URL("/", "https://congs" + serverNum + ".c.bytro.com").toString();
-  const payload = {
-    "@c": "ultshared.action.UltGetUserDetailsAction",
-    "requestID": 2,
-    "language": "en",
-    "targetUserID": Number(siteUserId),
-    "version": auth.version,
-    "client": "con-client-mobile-portrait",
-    "siteUserID": auth.siteUserID,
-    "adminLevel": 0,
-    "gameID": Number(gameId),
-    "playerID": 0,
-    "rights": "chat",
-    "userAuth": auth.userAuth,
-    "tstamp": String(Math.floor(Date.now() / 1000))
-  };
-  const headers = {
-    "Content-Type": "application/json",
-    "Origin": "https://conflictnations.com",
-    "Referer": "https://conflictnations.com"
-  };
-  if (auth.cookie) headers["Cookie"] = auth.cookie;
-
-  try {
-    const resp = await fetch(url, {
-      method: "POST",
-      headers: headers,
-      body: JSON.stringify(payload)
-    });
-    return resp.ok ? await resp.json() : null;
-  } catch (e) {
-    return null;
-  }
+function cleanName(rawName) {
+  // Voorkom dat Arabische/RTL-namen de hele Discord-regel omdraaien
+  const cleaned = String(rawName || "Unknown").replace(/[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\u200E\u200F\u202A-\u202E]/g, "").trim();
+  return cleaned || "Player";
 }
 
-function parseStatNumbers(p, prof) {
-  const res = prof?.result || prof || {};
-  const u = res.userDetails || res.user || res.profile || res;
-  const stats = u.stats || res.stats || p.stats || {};
-  const kills = Number(u.kills ?? u.killsVsPlayers ?? stats.kills ?? p.kills ?? 0);
-  const deaths = Number(u.deaths ?? u.deathsVsPlayers ?? stats.deaths ?? p.deaths ?? 0);
-  const kd = Number(u.kdRatio ?? stats.kdRatio ?? p.kdRatio ?? (deaths > 0 ? kills / deaths : kills) ?? 0);
-  const joined = Number(u.gamesJoined ?? stats.gamesJoined ?? p.gamesJoined ?? 0);
-  const solo = Number(u.soloWins ?? stats.soloWins ?? p.soloWins ?? 0);
-  const coalition = Number(u.coalitionWins ?? stats.coalitionWins ?? p.coalitionWins ?? 0);
-  const winrate = Number(u.winRate ?? stats.winRate ?? p.winRate ?? (joined > 0 ? Math.round(((solo + coalition) / joined) * 100) : 0));
-  const level = Number(u.level ?? u.rank ?? stats.level ?? p.level ?? 1);
-  return { kd, winrate, level };
+function parseLobbyPlayer(p) {
+  const vps = Number(p.vps ?? p.victoryPoints ?? p.points ?? 0);
+  const team = Number(p.teamID ?? p.coalitionID ?? 0);
+  const kills = Number(p.kills ?? p.killsVsPlayers ?? 0);
+  const deaths = Number(p.deaths ?? p.deathsVsPlayers ?? 0);
+  const kd = Number(p.kdRatio ?? (deaths > 0 ? kills / deaths : kills) ?? 0);
+  const level = Number(p.level ?? p.rank ?? 0);
+  return {
+    name: cleanName(p.name),
+    vps,
+    team,
+    kd,
+    level,
+    siteUserID: Number(p.siteUserID ?? p.userID ?? 0)
+  };
 }
 
 function extractRawPlayers(data) {
@@ -198,15 +113,12 @@ function extractRawPlayers(data) {
   return list;
 }
 async function fetchAndRespond(appId, token, gameId) {
-  let subrequests = 0;
-
   try {
     let found = null;
     const priority = Array.of(12, 15, 14, 13, 11, 16, 10, 17, 9, 18, 8, 19, 7, 20, 6, 21, 5, 22, 4, 23, 3, 24, 2, 1);
 
     for (let i = 0; i < priority.length; i += 6) {
       const batch = priority.slice(i, i + 6);
-      subrequests += batch.length;
       const results = await Promise.all(batch.map(num => checkServer(num, gameId)));
       found = results.find(r => r !== null);
       if (found) break;
@@ -217,49 +129,25 @@ async function fetchAndRespond(appId, token, gameId) {
       return;
     }
 
-    subrequests++;
-    const auth = await loginBytroDirect(found.serverNum, gameId);
-
     const rawPlayers = extractRawPlayers(found.data);
     if (rawPlayers.length === 0) {
       await sendDiscordText(appId, token, "Game ID " + gameId + " found on server " + found.serverNum + ", but no active players were returned.");
       return;
     }
 
-    const capped = rawPlayers.slice(0, 50);
-    const maxProfCalls = Math.max(0, 44 - subrequests);
-    const profiles = new Array(capped.length).fill(null);
-    const toFetch = new Array();
+    const players = rawPlayers.map(p => parseLobbyPlayer(p));
+    players.sort((a, b) => b.vps - a.vps);
 
-    for (let i = 0; i < capped.length; i++) {
-      const uid = capped.at(i).siteUserID || capped.at(i).userID || capped.at(i).playerID;
-      if (uid && uid > 0 && toFetch.length < maxProfCalls) {
-        toFetch.push({ index: i, uid: uid });
-      }
-    }
+    // Toon deel 2 van het ruwe speler-object (vanaf karakter 95) zodat we alle extra velden zien
+    const sampleObj = rawPlayers.find(p => p.name && p.name !== "Guest") || rawPlayers.at(0);
+    const extraFields = JSON.stringify(sampleObj).slice(95, 235);
 
-    subrequests += toFetch.length;
-    await Promise.all(toFetch.map(async (item) => {
-      profiles[item.index] = await fetchPlayerProfile(found.serverNum, gameId, item.uid, auth);
-    }));
+    let textOut = "**CON LOBBY " + gameId + " (Server " + found.serverNum + " | " + players.length + " Active)**\n`" + extraFields + "`\n```\n";
 
-    const enriched = capped.map((p, idx) => ({
-      name: String(p.name || "Unknown"),
-      ...parseStatNumbers(p, profiles.at(idx))
-    }));
-    enriched.sort((a, b) => b.kd - a.kd);
-
-    const firstProf = profiles.find(x => x !== null);
-    const profText = firstProf ? JSON.stringify(firstProf) : "";
-    const sampleRaw = (profText && !profText.includes("Exception"))
-      ? profText.slice(0, 110)
-      : ("p0:" + JSON.stringify(capped.at(1) || capped.at(0) || {}).slice(0, 110));
-
-    let textOut = "**CON LOBBY " + gameId + " (Srv " + found.serverNum + " | Login:" + auth.loggedIn + " c:" + auth.cookie.length + ")**\n`" + sampleRaw + "`\n```\n";
-
-    for (let i = 0; i < enriched.length; i++) {
-      const p = enriched.at(i);
-      const line = String(i + 1).padStart(2) + " " + p.name.slice(0, 12).padEnd(12) + " KD:" + p.kd.toFixed(2) + " W:" + p.winrate + "% L:" + p.level + "\n";
+    for (let i = 0; i < players.length; i++) {
+      const p = players.at(i);
+      const teamStr = p.team > 0 ? ("T" + p.team).padEnd(3) : "---";
+      const line = String(i + 1).padStart(2) + " " + p.name.slice(0, 14).padEnd(14) + " VP:" + String(p.vps).padStart(4) + " " + teamStr + "\n";
       if (textOut.length + line.length > 1950) break;
       textOut += line;
     }
@@ -303,6 +191,8 @@ export default {
     return new Response("Unknown command", { status: 400 });
   }
 };
+
+
 
 
 
