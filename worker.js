@@ -56,69 +56,60 @@ async function loginBytro(env) {
   const pass = env?.CON_PASS || DEFAULT_CON_PASS;
   if (!user || !pass) return { error: "NO_ENV" };
 
-  try {
-    const form = new URLSearchParams();
-    form.set("user", user);
-    form.set("pass", pass);
-    form.set("logintype", "login");
-    form.set("pid", "1");
+  const candidates = Array.of(
+    {
+      url: "https://conflictnations.com",
+      body: new URLSearchParams({ action: "login", username: user, password: pass, remember: "1" }).toString()
+    },
+    {
+      url: "https://conflictnations.com",
+      body: new URLSearchParams({ controller: "Auth", action: "login", user: user, pass: pass }).toString()
+    },
+    {
+      url: "https://conflictnations.com",
+      body: new URLSearchParams({ user: user, pass: pass, logintype: "login", pid: "1" }).toString()
+    }
+  );
 
-    const resp1 = await fetch("https://conflictnations.com", {
-      method: "POST",
-      redirect: "manual",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15",
-        "Origin": "https://conflictnations.com",
-        "Referer": "https://conflictnations.com/"
-      },
-      body: form.toString()
-    });
-
-    const loc1 = resp1.headers.get("location") || "";
-    const cookiesList = typeof resp1.headers.getSetCookie === "function"
-      ? resp1.headers.getSetCookie()
-      : Array.of(resp1.headers.get("set-cookie") || "");
-    const cookiePairs = cookiesList
-      .map(c => String(c).split(";").at(0).trim())
-      .filter(Boolean)
-      .join("; ");
-
-    let combined = loc1 + "\n" + cookiesList.join("\n") + "\n" + (await resp1.text());
-
-    if (loc1 && cookiePairs) {
-      const nextUrl = new URL(loc1, "https://conflictnations.com").toString();
-      const resp2 = await fetch(nextUrl, {
-        method: "GET",
+  let diag = "";
+  for (const c of candidates) {
+    try {
+      const resp = await fetch(c.url, {
+        method: "POST",
+        redirect: "manual",
         headers: {
-          "Cookie": cookiePairs,
+          "Content-Type": "application/x-www-form-urlencoded",
+          "X-Requested-With": "XMLHttpRequest",
           "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15",
+          "Origin": "https://conflictnations.com",
           "Referer": "https://conflictnations.com/"
-        }
+        },
+        body: c.body
       });
-      const cookies2 = typeof resp2.headers.getSetCookie === "function"
-        ? resp2.headers.getSetCookie().join("\n")
-        : (resp2.headers.get("set-cookie") || "");
-      combined += "\n" + cookies2 + "\n" + (await resp2.text());
+      const cookies = typeof resp.headers.getSetCookie === "function"
+        ? resp.headers.getSetCookie().join("; ")
+        : (resp.headers.get("set-cookie") || "");
+      const text = await resp.text();
+      const all = cookies + "\n" + text;
+
+      const uidMatch = all.match(/(?:siteUserID|userID|fe_typo_user|uid)["'=:\s]+(\d{5,12})/i);
+      const authMatch = all.match(/(?:userAuth|auth|uberAuth|token)["'=:\s]+([a-f0-9]{32,40})/i) || all.match(/([a-f0-9]{40})/i);
+      const verMatch = all.match(/(?:version|clientVersion)["'=:\s]+(\d{3,6})/i);
+
+      if (uidMatch && authMatch) {
+        return {
+          siteUserID: Number(uidMatch.at(1)),
+          userAuth: authMatch.at(1),
+          version: verMatch ? Number(verMatch.at(1)) : 420
+        };
+      }
+      const cleanTxt = text.replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim().slice(0, 18);
+      diag += resp.status + "(" + cleanTxt + ")|";
+    } catch (e) {
+      diag += "E|";
     }
-
-    const uidMatch = combined.match(/(?:siteUserID|userID|fe_typo_user|uid)["'=:\s]+(\d{5,12})/i);
-    const authMatch = combined.match(/(?:userAuth|auth|uberAuth|token)["'=:\s]+([a-f0-9]{32,40})/i) || combined.match(/([a-f0-9]{40})/i);
-    const verMatch = combined.match(/(?:version|clientVersion)["'=:\s]+(\d{3,6})/i);
-
-    if (uidMatch && authMatch) {
-      return {
-        siteUserID: Number(uidMatch.at(1)),
-        userAuth: authMatch.at(1),
-        version: verMatch ? Number(verMatch.at(1)) : 420
-      };
-    }
-
-    const cookieNames = cookiesList.map(c => String(c).split("=").at(0).trim()).filter(Boolean).join(",");
-    return { error: "302:" + (cookieNames || loc1.slice(0, 25) || "NONE") };
-  } catch (e) {
-    return { error: "ERR" };
   }
+  return { error: diag.slice(0, 32) || "FAIL" };
 }
 async function checkServer(serverNum, gameId, session) {
   const validSession = session && session.siteUserID ? session : null;
@@ -451,6 +442,8 @@ export default {
     return new Response("Unknown command", { status: 400 });
   }
 };
+
+
 
 
 
