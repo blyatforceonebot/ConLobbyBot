@@ -3,11 +3,12 @@ const CON_USER_ID = 91668627;
 const CON_USER_AUTH = "5a1bbe76f2d8d122d537f65f99aa57dee37d91b1";
 
 function hexToBytes(hex) {
-  const bytes = new Uint8Array(hex.length / 2);
+  const arr = new Uint8Array(hex.length / 2);
+  const view = new DataView(arr.buffer);
   for (let i = 0; i < hex.length; i += 2) {
-    bytes.set(Uint8Array.of(parseInt(hex.substr(i, 2), 16)), i / 2);
+    view.setUint8(i / 2, parseInt(hex.slice(i, i + 2), 16));
   }
-  return bytes;
+  return arr;
 }
 
 async function verifyDiscordSignature(request, bodyText) {
@@ -15,21 +16,25 @@ async function verifyDiscordSignature(request, bodyText) {
   const timestamp = request.headers.get("X-Signature-Timestamp");
   if (!signature || !timestamp) return false;
 
-  try {
-    const key = await crypto.subtle.importKey(
-      "raw",
-      hexToBytes(PUBLIC_KEY),
-      { name: "Ed25519" },
-      false,
-      Array.of("verify")
-    );
+  const encoder = new TextEncoder();
+  const data = encoder.encode(timestamp + bodyText);
+  const sigBytes = hexToBytes(signature);
+  const keyBytes = hexToBytes(PUBLIC_KEY);
 
-    const encoder = new TextEncoder();
-    const data = encoder.encode(timestamp + bodyText);
-    return await crypto.subtle.verify("Ed25519", key, hexToBytes(signature), data);
-  } catch (e) {
-    return false;
+  for (const algo of Array.of("Ed25519", "NODE-ED25519")) {
+    try {
+      const key = await crypto.subtle.importKey(
+        "raw",
+        keyBytes,
+        { name: algo, namedCurve: algo },
+        false,
+        Array.of("verify")
+      );
+      const ok = await crypto.subtle.verify(algo, key, sigBytes, data);
+      if (ok) return true;
+    } catch (e) {}
   }
+  return false;
 }
 
 async function checkServer(serverNum, gameId) {
@@ -208,5 +213,6 @@ export default {
     return new Response("Unknown command", { status: 400 });
   }
 };
+
 
 
