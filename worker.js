@@ -43,7 +43,7 @@ async function sendDiscordImage(appId, token, caption, pngBuffer) {
   const path = Array.of("api", "v10", "webhooks", appId, token, "messages", "@original").join("/");
   const form = new FormData();
   form.append("payload_json", JSON.stringify({ content: caption }));
-  form.append("files[0]", new Blob([pngBuffer], { type: "image/png" }), "lobby.png");
+  form.append("files", new Blob([pngBuffer], { type: "image/png" }), "lobby.png");
   await fetch(new URL(path, "https://discord.com").toString(), {
     method: "PATCH",
     headers: { "User-Agent": "DiscordBot (https://workers.dev, 1.0)" },
@@ -55,48 +55,48 @@ async function loginBytro(env) {
   const user = env?.CON_USER || DEFAULT_CON_USER;
   const pass = env?.CON_PASS || DEFAULT_CON_PASS;
   if (!user || !pass) return { error: "NO_ENV" };
-  const endpoints = [
-    "https://conflictnations.com",
-    "https://conflictnations.com"
-  ];
-  let lastStatus = "0";
-  for (const ep of endpoints) {
-    try {
-      const form = new URLSearchParams();
-      form.set("user", user);
-      form.set("pass", pass);
-      form.set("username", user);
-      form.set("password", pass);
-      form.set("login", "1");
-      const resp = await fetch(ep, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-          "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15",
-          "Origin": "https://conflictnations.com",
-          "Referer": "https://conflictnations.com"
-        },
-        body: form.toString()
-      });
-      lastStatus = String(resp.status);
-      const text = await resp.text();
-      const uidMatch = text.match(/"?(?:siteUserID|userID|uid)"?\s*[:=]\s*"?(\d{5,12})"?/i);
-      const authMatch = text.match(/"?(?:userAuth|auth|token)"?\s*[:=]\s*"([a-f0-9]{40})"/i) || text.match(/([a-f0-9]{40})/i);
-      const verMatch = text.match(/"?(?:version|clientVersion)"?\s*[:=]\s*"?(\d{3,6})"?/i);
-      if (uidMatch && authMatch) {
-        return {
-          siteUserID: Number(uidMatch[1]),
-          userAuth: authMatch[1],
-          version: verMatch ? Number(verMatch[1]) : 420
-        };
-      }
-    } catch (e) {
-      lastStatus = "ERR";
-    }
-  }
-  return { error: lastStatus };
-}
 
+  try {
+    const form = new URLSearchParams();
+    form.set("user", user);
+    form.set("pass", pass);
+    form.set("logintype", "login");
+    form.set("pid", "1");
+
+    const resp = await fetch("https://conflictnations.com", {
+      method: "POST",
+      redirect: "manual",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15",
+        "Origin": "https://conflictnations.com",
+        "Referer": "https://conflictnations.com/"
+      },
+      body: form.toString()
+    });
+
+    const cookieHeader = resp.headers.get("set-cookie") || "";
+    const bodyText = await resp.text();
+    const combined = cookieHeader + "\n" + bodyText;
+
+    const uidMatch = combined.match(/(?:siteUserID|userID|fe_typo_user|uid)["'=:\s]+(\d{5,12})/i);
+    const authMatch = combined.match(/(?:userAuth|auth|uberAuth|token)["'=:\s]+([a-f0-9]{32,40})/i) || combined.match(/([a-f0-9]{40})/i);
+    const verMatch = combined.match(/(?:version|clientVersion)["'=:\s]+(\d{3,6})/i);
+
+    if (uidMatch && authMatch) {
+      return {
+        siteUserID: Number(uidMatch),
+        userAuth: authMatch,
+        version: verMatch ? Number(verMatch) : 420
+      };
+    }
+
+    const snippet = (cookieHeader || bodyText.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ")).trim().slice(0, 45);
+    return { error: resp.status + ":" + (snippet || "empty") };
+  } catch (e) {
+    return { error: "ERR" };
+  }
+}
 async function checkServer(serverNum, gameId, session) {
   const validSession = session && session.siteUserID ? session : null;
   const url = new URL("/", "https://congs" + serverNum + ".c.bytro.com").toString();
@@ -136,6 +136,7 @@ async function checkServer(serverNum, gameId, session) {
   } catch (e) {}
   return null;
 }
+
 async function fetchUserDetailsBatch(serverNum, gameId, siteUserIDs, session) {
   const statsMap = {};
   if (!session || !session.siteUserID || siteUserIDs.length === 0) return statsMap;
@@ -195,74 +196,129 @@ async function fetchUserDetailsBatch(serverNum, gameId, siteUserIDs, session) {
   return statsMap;
 }
 
-function escXml(str) {
-  return String(str || "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-function buildBlackLobbySvg(gameId, serverNum, players, statsMap, authStatus) {
+const FONT5X7 = {
+  " ":, "!":, "#":, "%":,
+  "(":, ")":, "+":, ",":,
+  "-":, ".":, "/":, ":":,
+  "0":, "1":, "2":, "3":,
+  "4":, "5":, "6":, "7":,
+  "8":, "9":, "=":, "?":,
+  "A":, "B":, "C":, "D":,
+  "E":, "F":, "G":, "H":,
+  "I":, "J":, "K":, "L":,
+  "M":, "N":, "O":, "P":,
+  "Q":, "R":, "S":, "T":,
+  "U":, "V":, "W":, "X":,
+  "Y":, "Z":, "_":, "|": [0,0,127,0,0]
+};
+async function buildBlackLobbyPng(gameId, serverNum, players, statsMap, authStatus) {
   const maxRows = Math.min(players.length, 64);
-  const rowH = 26;
-  const headerH = 74;
-  const width = 920;
-  const height = headerH + maxRows * rowH + 20;
+  const scale = 2;
+  const width = 940;
+  const rowH = 24;
+  const headerH = 66;
+  const height = headerH + maxRows * rowH + 16;
+  const stride = 1 + width * 3;
+  const raw = new Uint8Array(height * stride);
 
-  let rowsSvg = "";
+  function setPx(x, y, r, g, b) {
+    if (x < 0 || x >= width || y < 0 || y >= height) return;
+    const idx = y * stride + 1 + x * 3;
+    raw[idx] = r; raw[idx + 1] = g; raw[idx + 2] = b;
+  }
+
+  function fillRect(x0, y0, w, h, r, g, b) {
+    for (let y = y0; y < y0 + h; y++) {
+      for (let x = x0; x < x0 + w; x++) setPx(x, y, r, g, b);
+    }
+  }
+
+  function drawText(txt, x0, y0, r, g, b) {
+    const up = String(txt || "").toUpperCase();
+    for (let c = 0; c < up.length; c++) {
+      const glyph = FONT5X7[up[c]] || FONT5X7[" "];
+      for (let col = 0; col < 5; col++) {
+        const bits = glyph[col];
+        for (let row = 0; row < 7; row++) {
+          if (bits & (1 << row)) {
+            fillRect(x0 + c * 6 * scale + col * scale, y0 + row * scale, scale, scale, r, g, b);
+          }
+        }
+      }
+    }
+  }
+
+  fillRect(0, 38, width, 24, 24, 24, 24);
+  drawText("BLYATFORCEONE - LOBBY #" + gameId + " (S" + serverNum + " | " + players.length + " ACTIVE | " + authStatus + ")", 16, 14, 255, 255, 255);
+  drawText("#", 16, 43, 220, 220, 220);
+  drawText("PLAYER", 56, 43, 220, 220, 220);
+  drawText("NATION", 250, 43, 220, 220, 220);
+  drawText("VP", 445, 43, 220, 220, 220);
+  drawText("TEAM", 520, 43, 220, 220, 220);
+  drawText("K/D", 615, 43, 220, 220, 220);
+  drawText("WIN%", 700, 43, 220, 220, 220);
+  drawText("LV", 790, 43, 220, 220, 220);
+  drawText("SC", 855, 43, 220, 220, 220);
+
   for (let i = 0; i < maxRows; i++) {
     const p = players[i];
     const st = statsMap[p.siteUserID] || { kd: "-", winPct: "-", level: "-", sc: "-" };
     const y = headerH + i * rowH;
-    const bg = i % 2 === 0 ? "#000000" : "#0d0d0d";
-    const teamStr = p.team > 0 ? ("Team " + p.team) : "-";
-    const scColor = st.sc === "Y" ? "#4ade80" : "#ffffff";
-
-    rowsSvg += `<rect x="0" y="${y}" width="${width}" height="${rowH}" fill="${bg}"/>`;
-    rowsSvg += `<line x1="16" y1="${y + rowH}" x2="${width - 16}" y2="${y + rowH}" stroke="#1f1f1f" stroke-width="1"/>`;
-    rowsSvg += `<text x="24" y="${y + 18}" fill="#a3a3a3" font-size="14">${i + 1}</text>`;
-    rowsSvg += `<text x="64" y="${y + 18}" fill="#ffffff" font-size="14" font-weight="bold">${escXml(p.name.slice(0, 18))}</text>`;
-    rowsSvg += `<text x="255" y="${y + 18}" fill="#e5e5e5" font-size="14">${escXml((p.nation || "-").slice(0, 16))}</text>`;
-    rowsSvg += `<text x="435" y="${y + 18}" fill="#ffffff" font-size="14">${p.vps}</text>`;
-    rowsSvg += `<text x="515" y="${y + 18}" fill="#d4d4d4" font-size="14">${escXml(teamStr)}</text>`;
-    rowsSvg += `<text x="615" y="${y + 18}" fill="#ffffff" font-size="14">${escXml(st.kd)}</text>`;
-    rowsSvg += `<text x="700" y="${y + 18}" fill="#ffffff" font-size="14">${escXml(st.winPct)}</text>`;
-    rowsSvg += `<text x="785" y="${y + 18}" fill="#ffffff" font-size="14">${escXml(st.level)}</text>`;
-    rowsSvg += `<text x="860" y="${y + 18}" fill="${scColor}" font-size="14" font-weight="bold">${escXml(st.sc)}</text>`;
+    if (i % 2 === 1) fillRect(0, y, width, rowH, 14, 14, 14);
+    fillRect(12, y + rowH - 1, width - 24, 1, 35, 35, 35);
+    const ty = y + 5;
+    drawText(String(i + 1), 16, ty, 180, 180, 180);
+    drawText(p.name.slice(0, 15), 56, ty, 255, 255, 255);
+    drawText((p.nation || "-").slice(0, 15), 250, ty, 230, 230, 230);
+    drawText(String(p.vps), 445, ty, 255, 255, 255);
+    drawText(p.team > 0 ? ("T" + p.team) : "-", 520, ty, 200, 200, 200);
+    drawText(String(st.kd), 615, ty, 255, 255, 255);
+    drawText(String(st.winPct), 700, ty, 255, 255, 255);
+    drawText(String(st.level), 790, ty, 255, 255, 255);
+    drawText(String(st.sc), 855, ty, st.sc === "Y" ? 80 : 255, 255, st.sc === "Y" ? 120 : 255);
   }
 
-  return `<svg xmlns="http://w3.org" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
-    <rect width="100%" height="100%" fill="#000000"/>
-    <g font-family="DejaVu Sans, Arial, sans-serif">
-      <text x="24" y="30" fill="#ffffff" font-size="20" font-weight="bold">BlyatForceOne — Lobby #${escXml(gameId)}</text>
-      <text x="900" y="30" fill="#a3a3a3" font-size="13" text-anchor="end">Server ${serverNum} | ${players.length} Active | ${escXml(authStatus)}</text>
-      <rect x="0" y="44" width="${width}" height="28" fill="#141414"/>
-      <text x="24" y="63" fill="#ffffff" font-size="13" font-weight="bold">#</text>
-      <text x="64" y="63" fill="#ffffff" font-size="13" font-weight="bold">Player</text>
-      <text x="255" y="63" fill="#ffffff" font-size="13" font-weight="bold">Nation</text>
-      <text x="435" y="63" fill="#ffffff" font-size="13" font-weight="bold">VP</text>
-      <text x="515" y="63" fill="#ffffff" font-size="13" font-weight="bold">Team</text>
-      <text x="615" y="63" fill="#ffffff" font-size="13" font-weight="bold">K/D</text>
-      <text x="700" y="63" fill="#ffffff" font-size="13" font-weight="bold">Win%</text>
-      <text x="785" y="63" fill="#ffffff" font-size="13" font-weight="bold">Level</text>
-      <text x="855" y="63" fill="#ffffff" font-size="13" font-weight="bold">SC</text>
-      ${rowsSvg}
-    </g>
-  </svg>`;
-}
-async function renderSvgToPng(svgString) {
-  try {
-    const resp = await fetch("https://quickchart.io", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ svg: svgString })
-    });
-    if (!resp.ok) return null;
-    return await resp.arrayBuffer();
-  } catch (e) {
-    return null;
+  const cs = new CompressionStream("deflate");
+  const writer = cs.writable.getWriter();
+  writer.write(raw);
+  writer.close();
+  const compBuf = new Uint8Array(await new Response(cs.readable).arrayBuffer());
+
+  function crc32(buf) {
+    let c = 0xffffffff;
+    for (let i = 0; i < buf.length; i++) {
+      c ^= buf[i];
+      for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+    }
+    return (c ^ 0xffffffff) >>> 0;
   }
+
+  function chunk(type, data) {
+    const out = new Uint8Array(12 + data.length);
+    const dv = new DataView(out.buffer);
+    dv.setUint32(0, data.length);
+    for (let i = 0; i < 4; i++) out[4 + i] = type.charCodeAt(i);
+    out.set(data, 8);
+    dv.setUint32(8 + data.length, crc32(out.subarray(4, 8 + data.length)));
+    return out;
+  }
+
+  const ihdr = new Uint8Array(13);
+  const idv = new DataView(ihdr.buffer);
+  idv.setUint32(0, width);
+  idv.setUint32(4, height);
+  ihdr[8] = 8; ihdr[9] = 2;
+
+  const sig = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+  const c1 = chunk("IHDR", ihdr);
+  const c2 = chunk("IDAT", compBuf);
+  const c3 = chunk("IEND", new Uint8Array(0));
+  const png = new Uint8Array(sig.length + c1.length + c2.length + c3.length);
+  png.set(sig, 0);
+  png.set(c1, sig.length);
+  png.set(c2, sig.length + c1.length);
+  png.set(c3, sig.length + c1.length + c2.length);
+  return png;
 }
 
 function cleanName(rawName) {
@@ -321,29 +377,15 @@ async function fetchAndRespond(appId, token, gameId, env) {
 
     const uids = players.map(p => p.siteUserID).filter(id => id > 0);
     const statsMap = await fetchUserDetailsBatch(found.serverNum, gameId, uids, session);
-    const authStatus = session && session.siteUserID ? "Auth:OK" : ("Auth:Fail(" + (session?.error || "?") + ")");
+    const authStatus = session && session.siteUserID ? "AUTH:OK" : ("AUTH:" + (session?.error || "FAIL"));
 
-    const svg = buildBlackLobbySvg(gameId, found.serverNum, players, statsMap, authStatus);
-    const pngBuffer = await renderSvgToPng(svg);
-
-    if (pngBuffer && pngBuffer.byteLength > 500) {
-      await sendDiscordImage(
-        appId,
-        token,
-        "**BlyatForceOne | Lobby " + gameId + "** (Server " + found.serverNum + " • " + players.length + " Active • " + authStatus + ")",
-        pngBuffer
-      );
-      return;
-    }
-
-    let textOut = "**BlyatForceOne | LOBBY " + gameId + " (S" + found.serverNum + " | " + players.length + " Active | " + authStatus + ")**\n```\n";
-    for (let i = 0; i < Math.min(players.length, 30); i++) {
-      const p = players[i];
-      const st = statsMap[p.siteUserID] || { kd: "-", winPct: "-", level: "-", sc: "-" };
-      textOut += `${i + 1}. ${p.name} (${p.nation}) VP:${p.vps} K/D:${st.kd} Win:${st.winPct} Lv:${st.level} SC:${st.sc}\n`;
-    }
-    textOut += "```";
-    await sendDiscordText(appId, token, textOut);
+    const pngBytes = await buildBlackLobbyPng(gameId, found.serverNum, players, statsMap, authStatus);
+    await sendDiscordImage(
+      appId,
+      token,
+      "**BlyatForceOne | Lobby " + gameId + "** (Server " + found.serverNum + " • " + players.length + " Active)",
+      pngBytes
+    );
   } catch (fatalErr) {
     try {
       await sendDiscordText(appId, token, "Worker error: " + String(fatalErr).slice(0, 200));
@@ -382,6 +424,8 @@ export default {
     return new Response("Unknown command", { status: 400 });
   }
 };
+
+
 
 
 
