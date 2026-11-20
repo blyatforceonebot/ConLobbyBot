@@ -54,24 +54,43 @@ async function sendDiscordImage(appId, token, caption, pngBuffer) {
 async function loginBytro(env) {
   const user = env?.CON_USER || DEFAULT_CON_USER;
   const pass = env?.CON_PASS || DEFAULT_CON_PASS;
-  const urls = Array.of(
-    "https://conflictnations.com",
-    "https://conflictnations.com"
+  const attempts = Array.of(
+    {
+      url: "https://conflictnations.com",
+      ct: "application/x-www-form-urlencoded",
+      body: new URLSearchParams({ user: user, pass: pass, username: user, password: pass }).toString()
+    },
+    {
+      url: "https://conflictnations.com",
+      ct: "application/x-www-form-urlencoded",
+      body: new URLSearchParams({ user: user, pass: pass, titleID: "2008", language: "en" }).toString()
+    },
+    {
+      url: "https://bytro.com",
+      ct: "application/json",
+      body: JSON.stringify({
+        "@c": "ultshared.action.UltLoginAction",
+        "requestID": 1,
+        "userName": user,
+        "password": pass,
+        "titleID": 2008,
+        "language": "en",
+        "version": 420
+      })
+    }
   );
   let info = "";
-  for (const u of urls) {
+  for (const a of attempts) {
     try {
-      const body = new URLSearchParams({ action: "login", username: user, password: pass, user: user, pass: pass }).toString();
-      const resp = await fetch(u, {
+      const resp = await fetch(a.url, {
         method: "POST",
         headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-          "X-Requested-With": "XMLHttpRequest",
+          "Content-Type": a.ct,
           "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)",
           "Origin": "https://conflictnations.com",
           "Referer": "https://conflictnations.com/"
         },
-        body
+        body: a.body
       });
       const text = await resp.text();
       const uid = text.match(/(?:siteUserID|userID|uid)["'=:\s]+(\d{5,12})/i);
@@ -79,12 +98,12 @@ async function loginBytro(env) {
       if (uid && auth) {
         return { siteUserID: Number(uid.at(1)), userAuth: auth.at(1), version: 420 };
       }
-      info += resp.status + ":" + text.replace(/<[^>]*>/g, "").trim().slice(0, 15) + "|";
+      info += resp.status + ":" + text.replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim().slice(0, 14) + "|";
     } catch (e) {
       info += "ERR|";
     }
   }
-  return { error: info.slice(0, 28) || "FAIL" };
+  return { error: info.slice(0, 32) || "FAIL" };
 }
 async function checkServer(serverNum, gameId, session) {
   const validSession = session && session.siteUserID ? session : null;
@@ -417,6 +436,8 @@ export default {
     return new Response("Unknown command", { status: 400 });
   }
 };
+
+
 
 
 
