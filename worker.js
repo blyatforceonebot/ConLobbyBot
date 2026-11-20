@@ -1,6 +1,6 @@
 const PUBLIC_KEY = "d4b2c5584aab9b59d22fcedfe90d62bbfc748e963613516db18212d40a1e32b6";
-const CON_USER_ID = 91668627;
-const CON_USER_AUTH = "5a1bbe76f2d8d122d537f65f99aa57dee37d91b1";
+const CON_USERNAME = "BlyatForceOne";
+const CON_PASSWORD = "12345Qwerty.";
 
 function hexToBytes(hex) {
   const arr = new Uint8Array(hex.length / 2);
@@ -39,7 +39,39 @@ async function sendDiscordText(appId, token, content) {
   });
 }
 
-async function checkServer(serverNum, gameId) {
+async function loginBytro() {
+  // 1. Haal huidige client-versie en sessie op van Conflict of Nations
+  try {
+    const homeResp = await fetch("https://conflictnations.com", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Origin": "https://www.conflictnations.com",
+        "Referer": "https://www.conflictnations.com/"
+      },
+      body: new URLSearchParams({
+        user: CON_USERNAME,
+        pass: CON_PASSWORD,
+        submit: "Login"
+      }).toString()
+    });
+    const html = await homeResp.text();
+    const uidMatch = html.match(/siteUserID['"]?\s*[:=]\s*['"]?(\d+)/i) || html.match(/userID['"]?\s*[:=]\s*['"]?(\d+)/i);
+    const authMatch = html.match(/userAuth['"]?\s*[:=]\s*['"]([a-f0-9]{32,64})['"]/i);
+    const verMatch = html.match(/version['"]?\s*[:=]\s*['"]?(\d{3,5})/i);
+
+    if (uidMatch && authMatch) {
+      return {
+        siteUserID: Number(uidMatch.at(1)),
+        userAuth: authMatch.at(1),
+        version: verMatch ? Number(verMatch.at(1)) : 420
+      };
+    }
+  } catch (e) {}
+  return null;
+}
+
+async function checkServer(serverNum, gameId, auth) {
   const url = new URL("/", "https://congs" + serverNum + ".c.bytro.com").toString();
   const payload = {
     "@c": "ultshared.action.UltUpdateGameStateAction",
@@ -49,14 +81,14 @@ async function checkServer(serverNum, gameId) {
     "actions": Array.of("java.util.LinkedList", new Array()),
     "stateIDs": null,
     "tstamps": null,
-    "version": 382,
+    "version": auth.version,
     "client": "con-client-mobile-portrait",
-    "siteUserID": CON_USER_ID,
+    "siteUserID": auth.siteUserID,
     "adminLevel": 0,
     "gameID": Number(gameId),
     "playerID": 0,
     "rights": "chat",
-    "userAuth": CON_USER_AUTH,
+    "userAuth": auth.userAuth,
     "tstamp": String(Math.floor(Date.now() / 1000))
   };
   try {
@@ -65,7 +97,7 @@ async function checkServer(serverNum, gameId) {
       headers: {
         "Content-Type": "application/json",
         "Origin": "https://conflictnations.com",
-        "Referer": "https://conflictnations.com"
+        "Referer": "https://conflictnations.com/"
       },
       body: JSON.stringify(payload)
     });
@@ -78,7 +110,7 @@ async function checkServer(serverNum, gameId) {
   return null;
 }
 
-async function fetchPlayerProfile(serverNum, gameId, siteUserId) {
+async function fetchPlayerProfile(serverNum, gameId, siteUserId, auth) {
   if (!siteUserId || siteUserId <= 0) return null;
   const url = new URL("/", "https://congs" + serverNum + ".c.bytro.com").toString();
   const payload = {
@@ -86,14 +118,14 @@ async function fetchPlayerProfile(serverNum, gameId, siteUserId) {
     "requestID": 2,
     "language": "en",
     "targetUserID": Number(siteUserId),
-    "version": 382,
+    "version": auth.version,
     "client": "con-client-mobile-portrait",
-    "siteUserID": CON_USER_ID,
+    "siteUserID": auth.siteUserID,
     "adminLevel": 0,
     "gameID": Number(gameId),
     "playerID": 0,
     "rights": "chat",
-    "userAuth": CON_USER_AUTH,
+    "userAuth": auth.userAuth,
     "tstamp": String(Math.floor(Date.now() / 1000))
   };
   try {
@@ -102,7 +134,7 @@ async function fetchPlayerProfile(serverNum, gameId, siteUserId) {
       headers: {
         "Content-Type": "application/json",
         "Origin": "https://conflictnations.com",
-        "Referer": "https://conflictnations.com"
+        "Referer": "https://conflictnations.com/"
       },
       body: JSON.stringify(payload)
     });
@@ -144,13 +176,22 @@ async function fetchAndRespond(appId, token, gameId) {
   let subrequests = 0;
 
   try {
+    // 1. Log automatisch in met het bot-account
+    subrequests++;
+    const auth = await loginBytro();
+    if (!auth) {
+      await sendDiscordText(appId, token, "Bytro login mislukt. Controleer CON_USERNAME en CON_PASSWORD in worker.js.");
+      return;
+    }
+
+    // 2. Zoek op welke server de game draait
     let found = null;
     const priority = Array.of(12, 15, 14, 13, 11, 16, 10, 17, 9, 18, 8, 19, 7, 20, 6, 21, 5, 22, 4, 23, 3, 24, 2, 1);
 
     for (let i = 0; i < priority.length; i += 6) {
       const batch = priority.slice(i, i + 6);
       subrequests += batch.length;
-      const results = await Promise.all(batch.map(num => checkServer(num, gameId)));
+      const results = await Promise.all(batch.map(num => checkServer(num, gameId, auth)));
       found = results.find(r => r !== null);
       if (found) break;
     }
@@ -167,7 +208,7 @@ async function fetchAndRespond(appId, token, gameId) {
     }
 
     const capped = rawPlayers.slice(0, 50);
-    const maxProfCalls = Math.max(0, 45 - subrequests);
+    const maxProfCalls = Math.max(0, 44 - subrequests);
     const profiles = new Array(capped.length).fill(null);
     const toFetch = new Array();
 
@@ -180,7 +221,7 @@ async function fetchAndRespond(appId, token, gameId) {
 
     subrequests += toFetch.length;
     await Promise.all(toFetch.map(async (item) => {
-      profiles[item.index] = await fetchPlayerProfile(found.serverNum, gameId, item.uid);
+      profiles[item.index] = await fetchPlayerProfile(found.serverNum, gameId, item.uid, auth);
     }));
 
     const enriched = capped.map((p, idx) => ({
@@ -189,10 +230,9 @@ async function fetchAndRespond(appId, token, gameId) {
     }));
     enriched.sort((a, b) => b.kd - a.kd);
 
-    // Korte debug-regel zodat we zien op welke server hij zit en wat de eerste profiel-response bevat
     const firstProf = profiles.find(x => x !== null);
-    const sampleRaw = firstProf ? JSON.stringify(firstProf).slice(0, 140) : ("pKeys:" + Object.keys(capped.at(0) || {}).join(","));
-    let textOut = "**CON LOBBY " + gameId + " (Srv " + found.serverNum + " | " + rawPlayers.length + "p)**\n`" + sampleRaw + "`\n```\n";
+    const sampleRaw = firstProf ? JSON.stringify(firstProf).slice(0, 120) : "no-prof";
+    let textOut = "**CON LOBBY " + gameId + " (Srv " + found.serverNum + " | v" + auth.version + " | " + rawPlayers.length + "p)**\n`" + sampleRaw + "`\n```\n";
 
     for (let i = 0; i < enriched.length; i++) {
       const p = enriched.at(i);
