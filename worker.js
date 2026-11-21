@@ -1,929 +1,946 @@
-const PUBLIC_KEY = "d4b2c5584aab9b59d22fcedfe90d62bbfc748e963613516db18212d40a1e32b6";
-const DEFAULT_CON_USER = "Blyatforceone";
-const DEFAULT_CON_PASS = "12345Qwerty.";
+// Cloudflare Worker for Discord /lobby command with PNG lobby + player stats card
+
 const DEFAULT_CON_UID = "105695234";
-const DEFAULT_CON_AUTH = "95e72c7edf919cdc7dcf487a23e12ca4";
+const DEFAULT_CON_AUTH = "6934ffe7e7d60930b3439e8da9159796";
+const DEFAULT_FIREFLY_HASH = "aeec512e05bb4b4fba1bec453a639aadded7f5f2";
+const DEFAULT_CLIENT = "con-client-web";
+const DEFAULT_VERSION = "420";
+const DEFAULT_API_VERSION = "20141208";
 
+const BRAND_TITLE = "CONFLICT OF NATIONS LOBBY";
+const BRAND_SUBTITLE = "LIVE MATCH & PLAYER STATS";
+const BRAND_TAG = "BFO";
+
+const MAX_PLAYERS_RENDERED = 24;
+const STATS_BATCH_SIZE = 12;
+const REQUEST_TIMEOUT_MS = 10000;
+
+function getConfig(env = {}) {
+  return {
+    discordPublicKey: String(env.DISCORD_PUBLIC_KEY || "").trim(),
+    conUid: String(env.CON_UID || DEFAULT_CON_UID).trim(),
+    conAuth: String(env.CON_AUTH || DEFAULT_CON_AUTH).trim(),
+    fireflyHash: String(env.CON_HASH || DEFAULT_FIREFLY_HASH).trim(),
+    fireflyData: String(env.CON_DATA || "").trim(),
+    client: String(env.CON_CLIENT || DEFAULT_CLIENT).trim(),
+    version: String(env.CON_VERSION || DEFAULT_VERSION).trim(),
+    apiVersion: String(env.CON_API_VERSION || DEFAULT_API_VERSION).trim(),
+    extraCookie: String(env.CON_EXTRA_COOKIE || "").trim(),
+  };
+}
 function hexToBytes(hex) {
-  const clean = String(hex || "").trim();
-  const arr = new Uint8Array(Math.floor(clean.length / 2));
-  const view = new DataView(arr.buffer);
-  for (let i = 0; i < clean.length; i += 2) {
-    view.setUint8(i / 2, parseInt(clean.slice(i, i + 2), 16));
+  const clean = String(hex || "").trim().replace(/^0x/i, "");
+  if (clean.length % 2 !== 0) return new Uint8Array(0);
+  const out = new Uint8Array(clean.length / 2);
+  for (let i = 0; i < out.length; i++) {
+    out[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
   }
-  return arr;
+  return out;
 }
 
-async function verifyDiscordSignature(request, bodyText) {
-  const signature = request.headers.get("X-Signature-Ed25519");
-  const timestamp = request.headers.get("X-Signature-Timestamp");
-  if (!signature || !timestamp) return false;
-  const data = new TextEncoder().encode(timestamp + bodyText);
-  const sigBytes = hexToBytes(signature);
-  const keyBytes = hexToBytes(PUBLIC_KEY);
-  for (const algo of Array.of("Ed25519", "NODE-ED25519")) {
-    try {
-      const key = await crypto.subtle.importKey(
-        "raw",
-        keyBytes,
-        { name: algo, namedCurve: algo },
-        false,
-        Array.of("verify")
-      );
-      if (await crypto.subtle.verify(algo, key, sigBytes, data)) return true;
-    } catch (e) {}
+function concatBytes(...arrays) {
+  const total = arrays.reduce((sum, a) => sum + a.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const a of arrays) {
+    out.set(a, offset);
+    offset += a.length;
   }
-  return false;
-}
-async function sendDiscordText(appId, token, content) {
-  const path = Array.of("api", "v10", "webhooks", appId, token, "messages", "@original").join("/");
-  await fetch(new URL(path, "https://discord.com").toString(), {
-    method: "PATCH",
-    headers: {
-      "Content-Type": "application/json",
-      "User-Agent": "DiscordBot (https://workers.dev, 1.0)"
-    },
-    body: JSON.stringify({ content: String(content || "").slice(0, 1990) })
-  });
+  return out;
 }
 
-async function sendDiscordImage(appId, token, caption, pngBuffer) {
-  const path = Array.of("api", "v10", "webhooks", appId, token, "messages", "@original").join("/");
-  const form = new FormData();
-  form.append(
-    "payload_json",
-    JSON.stringify({
-      content: String(caption || "").slice(0, 1990),
-      attachments: [{ id: 0, filename: "lobby.png" }]
-    })
-  );
-  form.append("files[0]", new Blob(Array.of(pngBuffer), { type: "image/png" }), "lobby.png");
-  await fetch(new URL(path, "https://discord.com").toString(), {
-    method: "PATCH",
-    headers: { "User-Agent": "DiscordBot (https://workers.dev, 1.0)" },
-    body: form
-  });
-}
-
-function safeJsonParse(raw) {
+async function verifyDiscordSignature(rawBody, signatureHex, timestamp, publicKeyHex) {
+  if (!publicKeyHex || !signatureHex || !timestamp) return false;
   try {
-    return JSON.parse(raw);
-  } catch (e) {
+    const keyBytes = hexToBytes(publicKeyHex);
+    const sigBytes = hexToBytes(signatureHex);
+    if (keyBytes.length !== 32 || sigBytes.length !== 64) return false;
+
+    const cryptoKey = await crypto.subtle.importKey(
+      "raw",
+      keyBytes,
+      { name: "Ed25519", namedCurve: "Ed25519" },
+      false,
+      ["verify"]
+    );
+    const message = new TextEncoder().encode(String(timestamp) + rawBody);
+    return await crypto.subtle.verify("Ed25519", cryptoKey, sigBytes, message);
+  } catch (_) {
+    return false;
+  }
+}
+
+function jsonResponse(payload, status = 200, extraHeaders = {}) {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      ...extraHeaders,
+    },
+  });
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort("timeout"), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function safeJsonParse(text) {
+  if (!text || typeof text !== "string") return null;
+  try {
+    return JSON.parse(text);
+  } catch (_) {
+    const start = text.indexOf("{");
+    const end = text.lastIndexOf("}");
+    if (start !== -1 && end > start) {
+      try {
+        return JSON.parse(text.slice(start, end + 1));
+      } catch (_) {
+        return null;
+      }
+    }
     return null;
   }
 }
+class SessionCookieJar {
+  constructor(initialCookie = "") {
+    this.map = new Map();
+    if (initialCookie) this.parseCookieHeader(initialCookie);
+  }
 
-function extractSessionFromText(text, cookieHeader = "") {
-  const raw = String(text || "") + "\n" + String(cookieHeader || "");
-  const json = safeJsonParse(String(text || ""));
-  if (json && typeof json === "object") {
-    const uidJson = Number(
-      json?.siteUserID ??
-        json?.userID ??
-        json?.uid ??
-        json?.user?.siteUserID ??
-        json?.user?.userID ??
-        json?.user?.id ??
-        json?.data?.siteUserID ??
-        json?.data?.userID ??
-        0
+  parseCookieHeader(headerStr) {
+    for (const part of String(headerStr || "").split(";")) {
+      const idx = part.indexOf("=");
+      if (idx > 0) {
+        const k = part.slice(0, idx).trim();
+        const v = part.slice(idx + 1).trim();
+        if (k) this.map.set(k, v);
+      }
+    }
+  }
+
+  ingestSetCookieHeaders(headers) {
+    if (!headers) return;
+    const list = typeof headers.getSetCookie === "function"
+      ? headers.getSetCookie()
+      : headers.get("set-cookie")
+        ? [headers.get("set-cookie")]
+        : [];
+    for (const raw of list) {
+      for (const entry of String(raw || "").split(/,(?=\s*[A-Za-z0-9_.-]+=)/)) {
+        const firstSemi = entry.split(";")[0] || "";
+        const eq = firstSemi.indexOf("=");
+        if (eq > 0) {
+          const k = firstSemi.slice(0, eq).trim();
+          const v = firstSemi.slice(eq + 1).trim();
+          if (k) this.map.set(k, v);
+        }
+      }
+    }
+  }
+
+  set(k, v) {
+    if (k && v !== undefined && v !== null) {
+      this.map.set(String(k), String(v));
+    }
+  }
+
+  toHeader() {
+    const pairs = [];
+    for (const [k, v] of this.map.entries()) {
+      pairs.push(`${k}=${v}`);
+    }
+    return pairs.join("; ");
+  }
+}
+
+function buildCookieJar(cfg) {
+  const jar = new SessionCookieJar();
+  const uid = cfg.conUid;
+  const auth = cfg.conAuth;
+  jar.set("bl_lang", "2");
+  jar.set("bl_lang_legacy", "2");
+  jar.set("acceptedCookies", "1");
+  jar.set("acceptedCookies_legacy", "1");
+  jar.set("mobile_con", "0");
+  jar.set("mobile_con_legacy", "0");
+  if (auth) {
+    jar.set("bl_sid", auth);
+    jar.set("bl_sid_legacy", auth);
+  }
+  if (uid) {
+    jar.set("puid", uid);
+    jar.set("puid_legacy", uid);
+  }
+  if (auth && uid) {
+    const hist = encodeURIComponent(
+      `&uid=${uid}&id=${auth}&source=browser-desktop`
     );
-    const authJson = String(
-      json?.userAuth ??
-        json?.auth ??
-        json?.uberAuth ??
-        json?.token ??
-        json?.sessionAuth ??
-        json?.authHash ??
-        json?.user?.userAuth ??
-        json?.user?.auth ??
-        json?.data?.userAuth ??
-        ""
-    ).trim();
-    if (uidJson > 0 && authJson) {
-      return { siteUserID: uidJson, userAuth: authJson, version: 420 };
-    }
+    jar.set("sup_hist", hist);
+    jar.set("sup_hist_legacy", hist);
   }
-
-  const uidMatch = raw.match(/(?:siteUserID|userID|uid|user_id)["'=:\s]+(\d{4,12})/i);
-  const authMatch =
-    raw.match(/(?:userAuth|auth|uberAuth|token|authHash|sessionAuth)["'=:\s]+([a-zA-Z0-9._-]{12,160})/i) ||
-    raw.match(/([a-f0-9]{24,64})/i);
-
-  if (uidMatch && authMatch) {
-    return {
-      siteUserID: Number(uidMatch.at(1)),
-      userAuth: String(authMatch.at(1)),
-      version: 420
-    };
+  if (cfg.extraCookie) {
+    jar.parseCookieHeader(cfg.extraCookie);
   }
-  return null;
-}
-async function loginBytro(env) {
-  const hasEnvUid = Boolean(String(env?.CON_UID || env?.CON_SITE_USER_ID || "").trim());
-  const hasEnvAuth = Boolean(String(env?.CON_AUTH || env?.CON_USER_AUTH || env?.CON_UBER_AUTH || "").trim());
-  const uid = Number(String(env?.CON_UID || env?.CON_SITE_USER_ID || DEFAULT_CON_UID).trim() || 0);
-  const auth = String(env?.CON_AUTH || env?.CON_USER_AUTH || env?.CON_UBER_AUTH || DEFAULT_CON_AUTH).trim();
-  if (uid > 0 && auth) {
-    return {
-      siteUserID: uid,
-      userAuth: auth,
-      version: 420,
-      source: hasEnvUid && hasEnvAuth ? "ENV" : "CODE_DEFAULT"
-    };
-  }
-
-  const user = String(env?.CON_USER || DEFAULT_CON_USER).trim();
-  const pass = String(env?.CON_PASS || DEFAULT_CON_PASS).trim();
-
-  const attempts = Array.of(
-    {
-      url: "https://www.conflictnations.com/index.php?eID=supLogin",
-      ctype: "application/x-www-form-urlencoded",
-      body: new URLSearchParams({ user, pass, client: "con-client-mobile-portrait", version: "420" }).toString()
-    },
-    {
-      url: "https://conflictnations.com/index.php?eID=supLogin",
-      ctype: "application/x-www-form-urlencoded",
-      body: new URLSearchParams({ username: user, password: pass, client: "con-client-mobile-portrait", version: "420" }).toString()
-    },
-    {
-      url: "https://api.conflictnations.com/login",
-      ctype: "application/json",
-      body: JSON.stringify({ user, pass, username: user, password: pass, client: "con-client-mobile-portrait", version: "420" })
-    },
-    {
-      url: "https://www.conflictnations.com/api/login",
-      ctype: "application/json",
-      body: JSON.stringify({ user, pass, username: user, password: pass, client: "con-client-mobile-portrait", version: "420" })
-    },
-    {
-      url: "https://conflictnations.com",
-      ctype: "application/x-www-form-urlencoded",
-      body: new URLSearchParams({ user, pass, client: "con-client-mobile-portrait" }).toString()
-    }
-  );
-
-  let lastStatus = "FAIL";
-  for (const a of attempts) {
-    try {
-      const resp = await fetch(a.url, {
-        method: "POST",
-        headers: {
-          "Content-Type": a.ctype,
-          "Accept": "application/json, text/plain, */*",
-          "User-Agent": "ConflictOfNations/420 CFNetwork/1498.700.2 Darwin/23.6.0",
-          "X-Requested-With": "XMLHttpRequest",
-          "Origin": "https://www.conflictnations.com",
-          "Referer": "https://www.conflictnations.com/"
-        },
-        body: a.body
-      });
-      const setCookie = resp.headers.get("set-cookie") || "";
-      const text = await resp.text();
-      const parsed = extractSessionFromText(text, setCookie);
-      if (parsed) return { ...parsed, source: "AUTO" };
-      lastStatus = String(resp.status);
-    } catch (e) {
-      lastStatus = "ERR";
-    }
-  }
-  return { error: lastStatus };
-}
-function toNum(val, fallback = 0) {
-  if (typeof val === "number" && Number.isFinite(val)) return val;
-  if (typeof val === "string") {
-    const cleaned = val.replace("%", "").replace(",", ".").trim();
-    if (!cleaned) return fallback;
-    const n = Number(cleaned);
-    if (Number.isFinite(n)) return n;
-  }
-  return fallback;
+  return jar;
 }
 
-function hasValue(val) {
-  return val !== undefined && val !== null && String(val).trim() !== "";
-}
-
-function extractServerMeta(data, serverNum, gameId) {
-  const states = data?.result?.states || {};
-  let title = "";
-  let day = 0;
-
-  for (const val of Object.values(states)) {
-    if (!val || typeof val !== "object") continue;
-    const candidateTitle = String(
-      val?.gameName ??
-        val?.scenarioName ??
-        val?.mapName ??
-        val?.name ??
-        val?.title ??
-        ""
-    ).trim();
-    if (!title && candidateTitle && !/^\d+$/.test(candidateTitle)) {
-      title = candidateTitle;
-    }
-    const candidateDay = toNum(
-      val?.day ?? val?.gameDay ?? val?.currentDay ?? val?.turn ?? val?.roundDay,
-      0
-    );
-    if (candidateDay > day) day = candidateDay;
-  }
-
-  if (!title) {
-    title = String(
-      data?.result?.gameName ??
-        data?.result?.scenarioName ??
-        data?.result?.mapName ??
-        data?.gameName ??
-        "WW3 / CONFLICT"
-    ).trim();
-  }
-  if (day <= 0) {
-    day = toNum(
-      data?.result?.day ?? data?.result?.gameDay ?? data?.day ?? data?.gameDay,
-      0
-    );
-  }
-
-  const cleanTitle = title
-    .replace(/[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\u200E\u200F\u202A-\u202E]/g, "")
-    .trim()
-    .slice(0, 28);
-
-  const dayText = day > 0 ? "DAY " + day : "LIVE";
-  return {
-    serverBadge: "S" + serverNum,
-    bannerSub: (cleanTitle || "CONFLICT SERVER") + " • " + dayText + " • ID " + gameId
+function encodeFireflyPayloadData(userIds, uid, auth) {
+  const list = Array.isArray(userIds)
+    ? userIds.map((x) => Number(x)).filter((n) => Number.isFinite(n) && n > 0)
+    : [];
+  const rawObj = {
+    userIDs: list,
+    siteUserID: Number(uid) || 0,
+    userAuth: auth || "",
   };
+  const jsonBytes = new TextEncoder().encode(JSON.stringify(rawObj));
+  let bin = "";
+  for (let i = 0; i < jsonBytes.length; i++) {
+    bin += String.fromCharCode(jsonBytes[i]);
+  }
+  return btoa(bin);
 }
+async function fetchGameState(gameId, cfg, jar) {
+  const cleanId = String(gameId || "").trim();
+  const candidateHosts = [
+    `https://congs${cleanId}.c.bytro.com`,
+    "https://www.conflictnations.com",
+  ];
 
-function parseScFlag(obj) {
-  const candidates = Array.of(
-    obj?.securityCouncil,
-    obj?.hasSecurityCouncil,
-    obj?.isSecurityCouncil,
-    obj?.sc,
-    obj?.hasSC,
-    obj?.highCommand,
-    obj?.premium,
-    obj?.isPremium,
-    obj?.profile?.securityCouncil,
-    obj?.profile?.sc,
-    obj?.stats?.securityCouncil,
-    obj?.user?.securityCouncil
-  );
-  for (const c of candidates) {
-    if (c === true) return true;
-    if (typeof c === "number" && c > 0) return true;
-    if (typeof c === "string") {
-      const low = c.trim().toLowerCase();
-      if (low === "true" || low === "yes" || low === "y" || low === "1" || low === "active") return true;
+  for (const host of candidateHosts) {
+    const url = host.includes("conflictnations.com")
+      ? `${host}/index.php?eID=api&key=ingameCon&action=getGameState&gameID=${encodeURIComponent(cleanId)}&outputFormat=json`
+      : `${host}/`;
+
+    const body = host.includes("conflictnations.com")
+      ? undefined
+      : JSON.stringify({
+          gameID: Number(cleanId) || cleanId,
+          siteUserID: Number(cfg.conUid) || 0,
+          userAuth: cfg.conAuth,
+          client: cfg.client,
+          version: cfg.version,
+          actions: [{ action: "UltUpdateGameStateAction" }],
+        });
+
+    try {
+      const resp = await fetchWithTimeout(url, {
+        method: body ? "POST" : "GET",
+        headers: {
+          "Content-Type": body ? "application/json" : "application/x-www-form-urlencoded",
+          "Cookie": jar.toHeader(),
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+          "Referer": "https://www.conflictnations.com/",
+        },
+        body,
+      });
+      jar.ingestSetCookieHeaders(resp.headers);
+      if (!resp.ok) continue;
+      const text = await resp.text();
+      const parsed = safeJsonParse(text);
+      if (parsed && typeof parsed === "object") {
+        return { ok: true, data: parsed, source: host };
+      }
+    } catch (_) {
+      // Try next candidate
     }
   }
-  return false;
+  return { ok: false, data: null, error: "Unable to load lobby state" };
 }
 
-function buildPlayerStatEntry(rawObj, fallbackId = 0) {
-  const u =
-    rawObj?.user ||
-    rawObj?.player ||
-    rawObj?.profile ||
-    rawObj?.userDetails ||
-    rawObj?.playerProfile ||
-    rawObj?.result ||
-    rawObj ||
-    {};
-  const stats =
-    u?.stats ||
-    u?.statistics ||
-    u?.career ||
-    u?.playerStats ||
-    u?.userStats ||
-    rawObj?.stats ||
-    rawObj?.statistics ||
-    {};
+function extractPlayersFromState(gameState) {
+  const players = [];
+  const seen = new Set();
 
-  const uid = toNum(
-    u?.userID ??
-      u?.siteUserID ??
-      u?.id ??
-      rawObj?.userID ??
-      rawObj?.siteUserID ??
-      rawObj?.requestedUserID ??
-      rawObj?.playerID,
-    fallbackId
-  );
+  function walk(node, depth = 0) {
+    if (!node || typeof node !== "object" || depth > 7) return;
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item, depth + 1);
+      return;
+    }
 
-  const kills = toNum(
-    u?.kills ??
-      u?.unitsKilled ??
-      u?.enemiesKilled ??
-      u?.enemyUnitsKilled ??
-      u?.totalKills ??
-      stats?.kills ??
-      stats?.unitsKilled ??
-      stats?.enemiesKilled ??
-      stats?.totalKills,
-    0
-  );
-  const losses = toNum(
-    u?.losses ??
-      u?.deaths ??
-      u?.unitsLost ??
-      u?.ownUnitsLost ??
-      u?.totalLosses ??
-      stats?.losses ??
-      stats?.deaths ??
-      stats?.unitsLost ??
-      stats?.totalLosses,
-    0
-  );
+    const maybeId = node.userID ?? node.siteUserID ?? node.playerID ?? node.ownerID;
+    const maybeName =
+      node.username ?? node.userName ?? node.leaderName ?? node.playerName ?? node.name;
+    const maybeNation =
+      node.nationName ?? node.countryName ?? node.nation ?? node.country ?? "";
 
-  const rawKd =
-    u?.kd ??
-    u?.kdRatio ??
-    u?.kdr ??
-    u?.killDeathRatio ??
-    stats?.kd ??
-    stats?.kdRatio ??
-    stats?.kdr ??
-    stats?.killDeathRatio;
-  const hasKd = hasValue(rawKd) || kills > 0 || losses > 0;
-  const kd = hasValue(rawKd)
-    ? toNum(rawKd, 0).toFixed(2)
-    : losses > 0
-    ? (kills / losses).toFixed(2)
-    : kills > 0
-    ? kills.toFixed(2)
-    : hasKd
-    ? "0.00"
-    : "-";
+    if (
+      maybeId !== undefined &&
+      maybeId !== null &&
+      String(maybeId).trim() !== "" &&
+      String(maybeId) !== "0" &&
+      maybeName &&
+      typeof maybeName === "string"
+    ) {
+      const idStr = String(maybeId).trim();
+      if (!seen.has(idStr)) {
+        seen.add(idStr);
+        players.push({
+          userId: idStr,
+          name: String(maybeName).trim(),
+          nation: String(maybeNation || "").trim(),
+          alliance: String(node.allianceTag || node.allianceName || node.alliance || "").trim(),
+          vp: Number(node.vp ?? node.victoryPoints ?? node.points ?? 0) || 0,
+        });
+      }
+    }
 
-  const played = toNum(
-    u?.gamesPlayed ??
-      u?.roundsPlayed ??
-      u?.matchesPlayed ??
-      u?.joined ??
-      u?.totalGames ??
-      stats?.gamesPlayed ??
-      stats?.roundsPlayed ??
-      stats?.matchesPlayed,
-    0
-  );
-  const soloWins = toNum(u?.soloWins ?? u?.winsSolo ?? stats?.soloWins ?? 0, 0);
-  const coalitionWins = toNum(u?.coalitionWins ?? u?.winsCoalition ?? stats?.coalitionWins ?? 0, 0);
-  const explicitWon = toNum(
-    u?.gamesWon ??
-      u?.wins ??
-      u?.wonGames ??
-      u?.victories ??
-      stats?.gamesWon ??
-      stats?.wins ??
-      stats?.victories,
-    -1
-  );
-  const won = explicitWon >= 0 ? explicitWon : soloWins + coalitionWins;
-
-  const rawWinRate =
-    u?.winRate ??
-    u?.winrate ??
-    u?.winRatio ??
-    stats?.winRate ??
-    stats?.winrate ??
-    stats?.winRatio;
-  let winPct = "-";
-  if (hasValue(rawWinRate)) {
-    const numWin = toNum(rawWinRate, 0);
-    winPct = Math.round(numWin <= 1 && numWin > 0 ? numWin * 100 : numWin) + "%";
-  } else if (played > 0) {
-    winPct = Math.round((won / played) * 100) + "%";
+    for (const val of Object.values(node)) {
+      if (val && typeof val === "object") walk(val, depth + 1);
+    }
   }
 
-  const rawLevel =
-    u?.rank ??
-    u?.level ??
-    u?.userLevel ??
-    u?.playerLevel ??
-    u?.experienceLevel ??
-    u?.militaryRank ??
-    stats?.rank ??
-    stats?.level;
-  const levelNum = toNum(rawLevel, 0);
-  const hasSC = parseScFlag(u) || parseScFlag(rawObj);
-  const alliance = String(
-    u?.allianceName ??
-      u?.allianceTag ??
-      u?.alliance ??
-      u?.coalitionName ??
-      rawObj?.allianceName ??
-      rawObj?.allianceTag ??
-      ""
+  walk(gameState, 0);
+  players.sort((a, b) => b.vp - a.vp);
+  return players;
+}
+
+function parseUserStatsRecord(userObj) {
+  if (!userObj || typeof userObj !== "object") return null;
+  const id = String(userObj.id ?? userObj.userID ?? userObj.siteUserID ?? "").trim();
+  if (!id) return null;
+
+  const rankProgress = userObj.rankProgress && typeof userObj.rankProgress === "object"
+    ? userObj.rankProgress
+    : {};
+  const gameStats = userObj.gameStats && typeof userObj.gameStats === "object"
+    ? userObj.gameStats
+    : {};
+  const gameStatsScore = gameStats.gameStatsScore && typeof gameStats.gameStatsScore === "object"
+    ? gameStats.gameStatsScore
+    : {};
+
+  const level = Number(
+    rankProgress.currentRankLevel ?? userObj.currentRankLevel ?? userObj.level ?? userObj.rankLevel ?? 0
+  ) || 0;
+
+  const gamesPlayed = Number(
+    gameStatsScore.gamesJoin ?? gameStats.gamesJoin ?? gameStats.gamesPlayed ?? userObj.gamesPlayed ?? 0
+  ) || 0;
+
+  const soloWins = Number(
+    gameStatsScore.soloVictory ?? gameStats.soloVictory ?? 0
+  ) || 0;
+  const coalitionWins = Number(
+    gameStatsScore.coalitionVictory ?? gameStats.coalitionVictory ?? 0
+  ) || 0;
+  const wins = Number(
+    userObj.wins ?? gameStats.wins ?? (soloWins + coalitionWins)
+  ) || 0;
+
+  const kills = Number(
+    userObj.kills ?? gameStats.kills ?? gameStats.unitsKilled ?? rankProgress.militaryScore ?? 0
+  ) || 0;
+  const losses = Number(
+    userObj.losses ?? gameStats.losses ?? gameStats.unitsLost ?? 0
+  ) || 0;
+
+  const winPct = gamesPlayed > 0 ? ((wins / gamesPlayed) * 100).toFixed(1) : "0.0";
+  const kd = losses > 0 ? (kills / losses).toFixed(2) : kills > 0 ? kills.toFixed(2) : "0.00";
+
+  const allianceTag = String(
+    userObj.allianceTag ||
+    userObj.allianceName ||
+    (userObj.alliance && (userObj.alliance.tag || userObj.alliance.name)) ||
+    ""
   ).trim();
 
+  const isSc = Boolean(
+    userObj.hasSecurityCouncil ||
+    userObj.securityCouncil ||
+    userObj.sc ||
+    (userObj.subscription && userObj.subscription.sc)
+  );
+
   return {
-    uid,
-    kd,
+    userId: id,
+    username: String(userObj.username || userObj.userName || "").trim(),
+    level,
+    gamesPlayed,
+    wins,
     winPct,
-    level: levelNum > 0 ? levelNum : "-",
-    sc: hasSC ? "Y" : "N",
-    played,
-    won,
     kills,
     losses,
-    soloWins,
-    coalitionWins,
-    alliance
+    kd,
+    alliance: allianceTag,
+    sc: isSc,
   };
 }
-async function checkServer(serverNum, gameId, session) {
-  const validSession = session && session.siteUserID ? session : null;
-  const url = new URL("/", "https://congs" + serverNum + ".c.bytro.com").toString();
-  const payload = {
-    "@c": "ultshared.action.UltUpdateGameStateAction",
-    "requestID": 1,
-    "language": "en",
-    "lastCallDuration": 0,
-    "actions": Array.of("java.util.LinkedList", new Array()),
-    "stateIDs": null,
-    "tstamps": null,
-    "version": validSession ? validSession.version : 420,
-    "client": "con-client-mobile-portrait",
-    "siteUserID": validSession ? validSession.siteUserID : 0,
-    "adminLevel": 0,
-    "gameID": Number(gameId),
-    "playerID": 0,
-    "rights": "chat",
-    "userAuth": validSession ? validSession.userAuth : "",
-    "tstamp": String(Math.floor(Date.now() / 1000))
-  };
+async function fetchStatsViaFirefly(userIds, cfg, jar) {
+  const statsById = new Map();
+  if (!Array.isArray(userIds) || userIds.length === 0) {
+    return { statsById, error: "No user IDs" };
+  }
+
+  const params = new URLSearchParams({
+    eID: "api",
+    key: "ingameCon",
+    action: "getUserDetailsFirefly",
+    hash: cfg.fireflyHash,
+    outputFormat: "json",
+    apiVersion: cfg.apiVersion,
+  });
+
+  const url = `https://www.conflictnations.com/index.php?${params.toString()}`;
+  const encodedData = cfg.fireflyData || encodeFireflyPayloadData(userIds, cfg.conUid, cfg.conAuth);
+  const formBody = new URLSearchParams({ data: encodedData });
+
   try {
-    const resp = await fetch(url, {
+    const resp = await fetchWithTimeout(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "Cookie": jar.toHeader(),
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Origin": "https://www.conflictnations.com",
+        "Referer": "https://www.conflictnations.com/",
+      },
+      body: formBody.toString(),
+    });
+    jar.ingestSetCookieHeaders(resp.headers);
+
+    const text = await resp.text();
+    const parsed = safeJsonParse(text);
+    if (!parsed || typeof parsed !== "object") {
+      return { statsById, error: `Firefly HTTP ${resp.status}` };
+    }
+
+    const candidates = [];
+    if (parsed.result && typeof parsed.result === "object") {
+      if (Array.isArray(parsed.result)) candidates.push(...parsed.result);
+      else if (parsed.result.users && typeof parsed.result.users === "object") {
+        candidates.push(...Object.values(parsed.result.users));
+      } else {
+        candidates.push(parsed.result);
+      }
+    }
+    if (parsed.users && typeof parsed.users === "object") {
+      candidates.push(...Object.values(parsed.users));
+    }
+
+    for (const item of candidates) {
+      const rec = parseUserStatsRecord(item);
+      if (rec && rec.userId) {
+        statsById.set(rec.userId, rec);
+      }
+    }
+
+    const msg = String(parsed.resultMessage || parsed.error || "").trim();
+    return {
+      statsById,
+      error: statsById.size === 0 ? (msg || `Firefly HTTP ${resp.status}`) : "",
+    };
+  } catch (err) {
+    return { statsById, error: String(err && err.message ? err.message : err) };
+  }
+}
+
+async function resolvePlayerStats(players, gameId, cfg, jar) {
+  const statsById = new Map();
+  const targetIds = players.slice(0, STATS_BATCH_SIZE).map((p) => p.userId);
+  if (targetIds.length === 0) {
+    return { statsById, statusText: "STATS: 0/0 (NO PLAYERS)" };
+  }
+
+  // Primary attempt via UltGetUserDetailsAction on game server
+  let rpcError = "";
+  try {
+    const rpcUrl = `https://congs${String(gameId || "").trim()}.c.bytro.com/`;
+    const resp = await fetchWithTimeout(rpcUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Origin": "https://conflictnations.com",
-        "Referer": "https://conflictnations.com"
+        "Cookie": jar.toHeader(),
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Referer": "https://www.conflictnations.com/",
       },
-      body: JSON.stringify(payload)
+      body: JSON.stringify({
+        gameID: Number(gameId) || gameId,
+        siteUserID: Number(cfg.conUid) || 0,
+        userAuth: cfg.conAuth,
+        client: cfg.client,
+        version: cfg.version,
+        actions: [{ action: "UltGetUserDetailsAction", userIDs: targetIds }],
+      }),
     });
-    if (!resp.ok) return null;
+    jar.ingestSetCookieHeaders(resp.headers);
     const text = await resp.text();
-    if (text.includes("players") || text.includes("UltPlayerProfile") || text.includes("nationName")) {
-      const parsed = safeJsonParse(text);
-      if (parsed) return { serverNum, data: parsed };
-    }
-  } catch (e) {}
-  return null;
-}
-
-function collectCandidateObjects(node, out, depth = 0) {
-  if (!node || typeof node !== "object" || depth > 6) return;
-  if (Array.isArray(node)) {
-    for (const item of node) {
-      if (item && typeof item === "object" && !Array.isArray(item)) {
-        out.push(item);
-        collectCandidateObjects(item, out, depth + 1);
-      }
-    }
-    return;
-  }
-  for (const val of Object.values(node)) {
-    if (val && typeof val === "object") {
-      if (!Array.isArray(val)) out.push(val);
-      collectCandidateObjects(val, out, depth + 1);
-    }
-  }
-}
-
-async function fetchUserDetailsBatch(serverNum, gameId, siteUserIDs, session) {
-  const statsMap = new Map();
-  let debugInfo = "no-uids";
-  if (!Array.isArray(siteUserIDs) || siteUserIDs.length === 0) {
-    return { statsMap, debugInfo };
-  }
-
-  const uid = session && session.siteUserID ? Number(session.siteUserID) : 0;
-  const auth = session && session.userAuth ? String(session.userAuth) : "";
-  const url = new URL("/", "https://congs" + serverNum + ".c.bytro.com").toString();
-  const chunkSize = 15;
-
-  for (let start = 0; start < siteUserIDs.length; start += chunkSize) {
-    const chunk = siteUserIDs.slice(start, start + chunkSize);
-    const subActions = chunk.map((id, idx) => ({
-      "@c": "ultshared.action.UltGetUserDetailsAction",
-      "requestID": start + idx + 2,
-      "userID": Number(id),
-      "siteUserID": Number(id)
-    }));
-
-    const payload = {
-      "@c": "ultshared.action.UltUpdateGameStateAction",
-      "requestID": start + 1,
-      "language": "en",
-      "lastCallDuration": 0,
-      "actions": Array.of("java.util.LinkedList", subActions),
-      "stateIDs": null,
-      "tstamps": null,
-      "version": session?.version || 420,
-      "client": "con-client-mobile-portrait",
-      "siteUserID": uid,
-      "adminLevel": 0,
-      "gameID": Number(gameId),
-      "playerID": 0,
-      "rights": "chat",
-      "userAuth": auth,
-      "tstamp": String(Math.floor(Date.now() / 1000))
-    };
-
-    try {
-      const resp = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Origin": "https://conflictnations.com",
-          "Referer": "https://conflictnations.com"
-        },
-        body: JSON.stringify(payload)
-      });
-      const rawText = await resp.text();
-      if (start === 0) {
-        const parsedDbg = safeJsonParse(rawText);
-        const topKeys = parsedDbg && typeof parsedDbg === "object" ? Object.keys(parsedDbg).join(",") : "non-json";
-        const resKeys =
-          parsedDbg?.result && typeof parsedDbg.result === "object"
-            ? Object.keys(parsedDbg.result).join(",")
-            : "";
-        const cleanPreview = rawText.replace(/\s+/g, " ").slice(0, 120);
-        debugInfo = "st=" + resp.status + " keys=[" + topKeys + "] res=[" + resKeys + "] txt=" + cleanPreview;
-      }
-      if (!resp.ok) continue;
-      const data = safeJsonParse(rawText);
-      if (!data) continue;
-
-      const candidates = new Array();
-      collectCandidateObjects(data?.result ?? data, candidates, 0);
-
-      for (const obj of candidates) {
-        const entry = buildPlayerStatEntry(obj, 0);
-        if (entry.uid > 0 && chunk.includes(entry.uid)) {
-          const prev = statsMap.get(entry.uid);
-          statsMap.set(entry.uid, {
-            uid: entry.uid,
-            kd: entry.kd !== "-" ? entry.kd : prev?.kd || "-",
-            winPct: entry.winPct !== "-" ? entry.winPct : prev?.winPct || "-",
-            level: entry.level !== "-" ? entry.level : prev?.level || "-",
-            sc: entry.sc === "Y" || prev?.sc === "Y" ? "Y" : "N",
-            played: entry.played || prev?.played || 0,
-            won: entry.won || prev?.won || 0,
-            alliance: entry.alliance || prev?.alliance || ""
-          });
+    const parsed = safeJsonParse(text);
+    if (parsed && typeof parsed === "object") {
+      const users = parsed.users || (parsed.result && parsed.result.users) || null;
+      if (users && typeof users === "object") {
+        for (const u of Object.values(users)) {
+          const rec = parseUserStatsRecord(u);
+          if (rec && rec.userId) statsById.set(rec.userId, rec);
         }
       }
-    } catch (e) {
-      if (start === 0) debugInfo = "err=" + String(e).slice(0, 80);
+      if (statsById.size === 0 && text.includes("UltAuthenticationException")) {
+        rpcError = "UltAuthenticationException";
+      }
     }
+  } catch (err) {
+    rpcError = String(err && err.message ? err.message : err);
   }
 
-  return { statsMap, debugInfo };
+  // Fallback to getUserDetailsFirefly if primary lookup returned no stats
+  let fireflyError = "";
+  if (statsById.size === 0) {
+    const ff = await fetchStatsViaFirefly(targetIds, cfg, jar);
+    for (const [k, v] of ff.statsById.entries()) {
+      statsById.set(k, v);
+    }
+    fireflyError = ff.error;
+  }
+
+  const loadedCount = statsById.size;
+  const totalCount = targetIds.length;
+  let statusText = `STATS: ${loadedCount}/${totalCount}`;
+  if (loadedCount === 0) {
+    const reason = fireflyError || rpcError || "AUTH CHECK";
+    statusText = `STATS: 0/${totalCount} (${reason.slice(0, 28).toUpperCase()})`;
+  }
+
+  return { statsById, statusText };
 }
-const FONT_HEX = {
-  " ": "0000000000", "!": "00005f0000", "#": "147f147f14", "%": "2313086462",
-  "&": "3649562050", "(": "001c224100", ")": "0041221c00", "+": "08083e0808",
-  ",": "0050300000", "-": "0808080808", ".": "0060600000", "/": "2010080402",
-  ":": "0036360000", "=": "1414141414", "?": "0201510906", "@": "3e415d555e",
-  "[": "007f414100", "]": "0041417f00", "_": "4040404040", "|": "00007f0000",
-  "0": "3e5149453e", "1": "00427f4000", "2": "4261514946", "3": "2141454b31",
-  "4": "1814127f10", "5": "2745454539", "6": "3c4a494930", "7": "0171090503",
-  "8": "3649494936", "9": "064949291e",
-  "A": "7e1111117e", "B": "7f49494936", "C": "3e41414122", "D": "7f4141221c",
-  "E": "7f49494941", "F": "7f09090901", "G": "3e4149497a", "H": "7f0808087f",
-  "I": "00417f4100", "J": "2040413f01", "K": "7f08142241", "L": "7f40404040",
-  "M": "7f020c027f", "N": "7f0408107f", "O": "3e4141413e", "P": "7f09090906",
-  "Q": "3e4151215e", "R": "7f09192946", "S": "4649494931", "T": "01017f0101",
-  "U": "3f4040403f", "V": "1f2040201f", "W": "3f4038403f", "X": "6314081463",
-  "Y": "0708700807", "Z": "6151494543"
+const FONT_5X7 = {
+  " ": [0, 0, 0, 0, 0, 0, 0],
+  "!": [4, 4, 4, 4, 4, 0, 4],
+  '"': [10, 10, 10, 0, 0, 0, 0],
+  "#": [10, 31, 10, 10, 31, 10, 0],
+  "$": [4, 15, 20, 14, 5, 30, 4],
+  "%": [25, 26, 4, 8, 22, 19, 0],
+  "&": [12, 18, 20, 8, 21, 18, 13],
+  "'": [4, 4, 8, 0, 0, 0, 0],
+  "(": [2, 4, 8, 8, 8, 4, 2],
+  ")": [8, 4, 2, 2, 2, 4, 8],
+  "*": [0, 21, 14, 31, 14, 21, 0],
+  "+": [0, 4, 4, 31, 4, 4, 0],
+  ",": [0, 0, 0, 0, 0, 4, 8],
+  "-": [0, 0, 0, 31, 0, 0, 0],
+  ".": [0, 0, 0, 0, 0, 12, 12],
+  "/": [1, 2, 4, 8, 16, 0, 0],
+  "0": [14, 17, 19, 21, 25, 17, 14],
+  "1": [4, 12, 4, 4, 4, 4, 14],
+  "2": [30, 1, 1, 14, 16, 16, 31],
+  "3": [30, 1, 1, 14, 1, 1, 30],
+  "4": [18, 18, 18, 31, 2, 2, 2],
+  "5": [31, 16, 16, 30, 1, 1, 30],
+  "6": [14, 16, 16, 30, 17, 17, 14],
+  "7": [31, 1, 2, 4, 8, 8, 8],
+  "8": [14, 17, 17, 14, 17, 17, 14],
+  "9": [14, 17, 17, 15, 1, 1, 14],
+  ":": [0, 12, 12, 0, 12, 12, 0],
+  ";": [0, 12, 12, 0, 12, 12, 8],
+  "<": [2, 4, 8, 16, 8, 4, 2],
+  "=": [0, 0, 31, 0, 31, 0, 0],
+  ">": [16, 8, 4, 2, 4, 8, 16],
+  "?": [14, 17, 1, 2, 4, 0, 4],
+  "@": [14, 17, 23, 21, 23, 16, 14],
+  "A": [14, 17, 17, 31, 17, 17, 17],
+  "B": [30, 17, 17, 30, 17, 17, 30],
+  "C": [14, 17, 16, 16, 16, 17, 14],
+  "D": [28, 18, 17, 17, 17, 18, 28],
+  "E": [31, 16, 16, 30, 16, 16, 31],
+  "F": [31, 16, 16, 30, 16, 16, 16],
+  "G": [14, 17, 16, 23, 17, 17, 15],
+  "H": [17, 17, 17, 31, 17, 17, 17],
+  "I": [14, 4, 4, 4, 4, 4, 14],
+  "J": [7, 2, 2, 2, 18, 18, 12],
+  "K": [17, 18, 20, 24, 20, 18, 17],
+  "L": [16, 16, 16, 16, 16, 16, 31],
+  "M": [17, 27, 21, 21, 17, 17, 17],
+  "N": [17, 25, 21, 19, 17, 17, 17],
+  "O": [14, 17, 17, 17, 17, 17, 14],
+  "P": [30, 17, 17, 30, 16, 16, 16],
+  "Q": [14, 17, 17, 17, 21, 18, 13],
+  "R": [30, 17, 17, 30, 20, 18, 17],
+  "S": [15, 16, 16, 14, 1, 1, 30],
+  "T": [31, 4, 4, 4, 4, 4, 4],
+  "U": [17, 17, 17, 17, 17, 17, 14],
+  "V": [17, 17, 17, 17, 17, 10, 4],
+  "W": [17, 17, 17, 21, 21, 27, 17],
+  "X": [17, 17, 10, 4, 10, 17, 17],
+  "Y": [17, 17, 10, 4, 4, 4, 4],
+  "Z": [31, 1, 2, 4, 8, 16, 31],
+  "[": [14, 8, 8, 8, 8, 8, 14],
+  "\\": [16, 8, 4, 2, 1, 0, 0],
+  "]": [14, 2, 2, 2, 2, 2, 14],
+  "^": [4, 10, 17, 0, 0, 0, 0],
+  "_": [0, 0, 0, 0, 0, 0, 31],
+  "`": [8, 4, 2, 0, 0, 0, 0],
+  "|": [4, 4, 4, 4, 4, 4, 4],
 };
-async function buildBlackLobbyPng(gameId, serverNum, players, statsMap, statusInfo, serverMeta) {
-  const maxRows = Math.min(players.length, 64);
-  const scale = 2;
-  const width = 1240;
-  const rowH = 24;
-  const headerH = 74;
-  const height = headerH + maxRows * rowH + 16;
-  const stride = 1 + width * 3;
-  const raw = new Uint8Array(height * stride);
-  const view = new DataView(raw.buffer);
 
-  function setPx(x, y, r, g, b) {
-    if (x < 0 || x >= width || y < 0 || y >= height) return;
-    const idx = y * stride + 1 + x * 3;
-    view.setUint8(idx, r);
-    view.setUint8(idx + 1, g);
-    view.setUint8(idx + 2, b);
+class PixelCanvas {
+  constructor(width, height, bgColor = [15, 21, 32, 255]) {
+    this.width = width;
+    this.height = height;
+    this.pixels = new Uint8Array(width * height * 4);
+    this.fillRect(0, 0, width, height, bgColor);
   }
 
-  function fillRect(x0, y0, w, h, r, g, b) {
-    for (let y = y0; y < y0 + h; y++) {
-      for (let x = x0; x < x0 + w; x++) setPx(x, y, r, g, b);
+  setPixel(x, y, rgba) {
+    const ix = Math.floor(x);
+    const iy = Math.floor(y);
+    if (ix < 0 || iy < 0 || ix >= this.width || iy >= this.height) return;
+    const idx = (iy * this.width + ix) * 4;
+    const alpha = (rgba[3] ?? 255) / 255;
+    if (alpha >= 1) {
+      this.pixels[idx] = rgba[0];
+      this.pixels[idx + 1] = rgba[1];
+      this.pixels[idx + 2] = rgba[2];
+      this.pixels[idx + 3] = 255;
+    } else if (alpha > 0) {
+      this.pixels[idx] = Math.round(rgba[0] * alpha + this.pixels[idx] * (1 - alpha));
+      this.pixels[idx + 1] = Math.round(rgba[1] * alpha + this.pixels[idx + 1] * (1 - alpha));
+      this.pixels[idx + 2] = Math.round(rgba[2] * alpha + this.pixels[idx + 2] * (1 - alpha));
+      this.pixels[idx + 3] = 255;
     }
   }
 
-  function drawText(txt, x0, y0, r, g, b) {
-    const up = String(txt || "").toUpperCase();
-    for (let c = 0; c < up.length; c++) {
-      const hex = FONT_HEX[up.charAt(c)] || FONT_HEX[" "];
-      for (let col = 0; col < 5; col++) {
-        const bits = parseInt(hex.slice(col * 2, col * 2 + 2), 16);
-        for (let row = 0; row < 7; row++) {
-          if (bits & (1 << row)) {
-            fillRect(x0 + c * 6 * scale + col * scale, y0 + row * scale, scale, scale, r, g, b);
+  fillRect(x, y, w, h, rgba) {
+    const x0 = Math.max(0, Math.floor(x));
+    const y0 = Math.max(0, Math.floor(y));
+    const x1 = Math.min(this.width, Math.ceil(x + w));
+    const y1 = Math.min(this.height, Math.ceil(y + h));
+    for (let py = y0; py < y1; py++) {
+      for (let px = x0; px < x1; px++) {
+        this.setPixel(px, py, rgba);
+      }
+    }
+  }
+
+  drawRectOutline(x, y, w, h, rgba, thickness = 1) {
+    this.fillRect(x, y, w, thickness, rgba);
+    this.fillRect(x, y + h - thickness, w, thickness, rgba);
+    this.fillRect(x, y, thickness, h, rgba);
+    this.fillRect(x + w - thickness, y, thickness, h, rgba);
+  }
+
+  drawText(text, x, y, rgba, scale = 2) {
+    const upper = String(text || "").toUpperCase();
+    let cursorX = Math.floor(x);
+    const cursorY = Math.floor(y);
+    for (let i = 0; i < upper.length; i++) {
+      const ch = upper[i];
+      const glyph = FONT_5X7[ch] || FONT_5X7["?"];
+      for (let row = 0; row < 7; row++) {
+        const bits = glyph[row];
+        for (let col = 0; col < 5; col++) {
+          if (bits & (1 << (4 - col))) {
+            this.fillRect(
+              cursorX + col * scale,
+              cursorY + row * scale,
+              scale,
+              scale,
+              rgba
+            );
           }
         }
       }
+      cursorX += 6 * scale;
     }
   }
 
-  function drawServerEmblem(x0, y0, badgeText) {
-    fillRect(x0, y0, 38, 34, 175, 32, 32);
-    fillRect(x0 + 2, y0 + 2, 34, 30, 22, 24, 29);
-    fillRect(x0 + 16, y0 + 6, 6, 13, 235, 185, 55);
-    fillRect(x0 + 10, y0 + 11, 18, 4, 235, 185, 55);
-    fillRect(x0 + 5, y0 + 22, 28, 9, 175, 32, 32);
-    drawText(String(badgeText || "S?").slice(0, 3), x0 + 8, y0 + 24, 255, 220, 95);
+  drawEmblem(x, y, size = 44) {
+    const gold = [218, 175, 68, 255];
+    const navy = [20, 32, 52, 255];
+    const crimson = [178, 46, 46, 255];
+    const cream = [240, 236, 224, 255];
+
+    this.fillRect(x, y, size, size, navy);
+    this.drawRectOutline(x, y, size, size, gold, 2);
+    this.fillRect(x + 4, y + 4, size - 8, 8, crimson);
+    this.fillRect(x + 4, y + size - 12, size - 8, 8, crimson);
+    this.drawText(BRAND_TAG, x + Math.floor((size - 18 * 2) / 2), y + 15, cream, 2);
   }
-
-  fillRect(0, 0, width, 44, 20, 22, 27);
-  fillRect(0, 0, width, 3, 175, 32, 32);
-  fillRect(0, 42, width, 2, 235, 185, 55);
-  drawServerEmblem(14, 5, serverMeta?.serverBadge || ("S" + serverNum));
-
-  drawText(
-    "BFO #" + gameId + " " + players.length + "P " + statusInfo,
-    62,
-    9,
-    255,
-    255,
-    255
-  );
-  drawText(
-    String(serverMeta?.bannerSub || ("SERVER " + serverNum + " • GAME " + gameId)),
-    62,
-    26,
-    235,
-    185,
-    55
-  );
-
-  fillRect(0, 46, width, 24, 28, 24, 26);
-  drawText("#", 16, 51, 235, 185, 55);
-  drawText("PLAYER", 56, 51, 235, 185, 55);
-  drawText("ALLIANCE", 240, 51, 235, 185, 55);
-  drawText("NATION", 410, 51, 235, 185, 55);
-  drawText("VP", 590, 51, 235, 185, 55);
-  drawText("TEAM", 655, 51, 235, 185, 55);
-  drawText("K/D", 730, 51, 235, 185, 55);
-  drawText("WIN%", 815, 51, 235, 185, 55);
-  drawText("W/P", 900, 51, 235, 185, 55);
-  drawText("LV", 995, 51, 235, 185, 55);
-  drawText("SC", 1065, 51, 235, 185, 55);
-  drawText("UID", 1125, 51, 235, 185, 55);
-
-  for (let i = 0; i < maxRows; i++) {
-    const p = players.at(i);
-    const st = statsMap.get(p.siteUserID) || {
-      kd: "-",
-      winPct: "-",
-      level: "-",
-      sc: "-",
-      played: 0,
-      won: 0,
-      alliance: ""
-    };
-    const allianceLabel = (p.alliance || st.alliance || "-").slice(0, 14);
-    const wpLabel = st.played > 0 ? (st.won + "/" + st.played) : "-";
-    const y = headerH + i * rowH;
-    if (i % 2 === 1) fillRect(0, y, width, rowH, 14, 14, 14);
-    fillRect(12, y + rowH - 1, width - 24, 1, 35, 35, 35);
-    const ty = y + 5;
-    drawText(String(i + 1), 16, ty, 180, 180, 180);
-    drawText(String(p.name || "Player").slice(0, 15), 56, ty, 255, 255, 255);
-    drawText(allianceLabel, 240, ty, 200, 220, 255);
-    drawText(String(p.nation || "-").slice(0, 15), 410, ty, 230, 230, 230);
-    drawText(String(p.vps), 590, ty, 255, 255, 255);
-    drawText(p.team > 0 ? ("T" + p.team) : "-", 655, ty, 200, 200, 200);
-    drawText(String(st.kd), 730, ty, 255, 255, 255);
-    drawText(String(st.winPct), 815, ty, 255, 255, 255);
-    drawText(wpLabel, 900, ty, 220, 220, 220);
-    drawText(String(st.level), 995, ty, 255, 255, 255);
-    drawText(String(st.sc), 1065, ty, st.sc === "Y" ? 80 : 255, 255, st.sc === "Y" ? 120 : 255);
-    drawText(p.siteUserID > 0 ? String(p.siteUserID) : "-", 1125, ty, 170, 170, 170);
-  }
-
-  const cs = new CompressionStream("deflate");
-  const writer = cs.writable.getWriter();
-  writer.write(raw);
-  writer.close();
-  const compBuf = new Uint8Array(await new Response(cs.readable).arrayBuffer());
-
-  function crc32(buf) {
-    let c = 0xffffffff;
-    for (let i = 0; i < buf.length; i++) {
-      c ^= buf.at(i);
-      for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+}
+const CRC32_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) {
+      c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
     }
-    return (c ^ 0xffffffff) >>> 0;
+    table[n] = c >>> 0;
+  }
+  return table;
+})();
+
+function crc32(bytes) {
+  let c = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) {
+    c = CRC32_TABLE[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
+  }
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+function adler32(bytes) {
+  let a = 1;
+  let b = 0;
+  for (let i = 0; i < bytes.length; i++) {
+    a = (a + bytes[i]) % 65521;
+    b = (b + a) % 65521;
+  }
+  return ((b << 16) | a) >>> 0;
+}
+
+function makePngChunk(typeStr, dataBytes) {
+  const typeBytes = new TextEncoder().encode(typeStr);
+  const len = dataBytes.length;
+  const out = new Uint8Array(12 + len);
+  const view = new DataView(out.buffer);
+  view.setUint32(0, len, false);
+  out.set(typeBytes, 4);
+  out.set(dataBytes, 8);
+  const crcInput = concatBytes(typeBytes, dataBytes);
+  view.setUint32(8 + len, crc32(crcInput), false);
+  return out;
+}
+
+function encodeCanvasToPng(canvas) {
+  const { width, height, pixels } = canvas;
+  const rowStride = width * 4 + 1;
+  const rawScanlines = new Uint8Array(rowStride * height);
+
+  for (let y = 0; y < height; y++) {
+    const srcStart = y * width * 4;
+    const dstStart = y * rowStride;
+    rawScanlines[dstStart] = 0; // Filter type 0 (None)
+    rawScanlines.set(pixels.subarray(srcStart, srcStart + width * 4), dstStart + 1);
   }
 
-  function chunk(type, data) {
-    const out = new Uint8Array(12 + data.length);
-    const dv = new DataView(out.buffer);
-    dv.setUint32(0, data.length);
-    for (let i = 0; i < 4; i++) dv.setUint8(4 + i, type.charCodeAt(i));
-    out.set(data, 8);
-    dv.setUint32(8 + data.length, crc32(out.subarray(4, 8 + data.length)));
-    return out;
+  // Wrap raw scanlines in uncompressed DEFLATE blocks inside a zlib stream
+  const maxBlock = 65535;
+  const numBlocks = Math.max(1, Math.ceil(rawScanlines.length / maxBlock));
+  const deflateBlocks = [];
+  let offset = 0;
+  for (let b = 0; b < numBlocks; b++) {
+    const chunk = rawScanlines.subarray(offset, Math.min(rawScanlines.length, offset + maxBlock));
+    offset += chunk.length;
+    const isFinal = b === numBlocks - 1 ? 1 : 0;
+    const header = new Uint8Array(5);
+    header[0] = isFinal;
+    const len = chunk.length;
+    const nlen = (~len) & 0xffff;
+    header[1] = len & 0xff;
+    header[2] = (len >>> 8) & 0xff;
+    header[3] = nlen & 0xff;
+    header[4] = (nlen >>> 8) & 0xff;
+    deflateBlocks.push(header, chunk);
   }
+
+  const adler = adler32(rawScanlines);
+  const adlerBytes = new Uint8Array(4);
+  new DataView(adlerBytes.buffer).setUint32(0, adler, false);
+  const zlibStream = concatBytes(new Uint8Array([0x78, 0x01]), ...deflateBlocks, adlerBytes);
 
   const ihdr = new Uint8Array(13);
-  const idv = new DataView(ihdr.buffer);
-  idv.setUint32(0, width);
-  idv.setUint32(4, height);
-  idv.setUint8(8, 8);
-  idv.setUint8(9, 2);
+  const ihdrView = new DataView(ihdr.buffer);
+  ihdrView.setUint32(0, width, false);
+  ihdrView.setUint32(4, height, false);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 6; // RGBA
+  ihdr[10] = 0;
+  ihdr[11] = 0;
+  ihdr[12] = 0;
 
-  const sig = new Uint8Array(Array.of(137, 80, 78, 71, 13, 10, 26, 10));
-  const c1 = chunk("IHDR", ihdr);
-  const c2 = chunk("IDAT", compBuf);
-  const c3 = chunk("IEND", new Uint8Array(0));
-  const png = new Uint8Array(sig.length + c1.length + c2.length + c3.length);
-  png.set(sig, 0);
-  png.set(c1, sig.length);
-  png.set(c2, sig.length + c1.length);
-  png.set(c3, sig.length + c1.length + c2.length);
-  return png;
-}
-function cleanName(rawName) {
-  const cleaned = String(rawName || "Unknown")
-    .replace(/[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\u200E\u200F\u202A-\u202E]/g, "")
-    .trim();
-  return cleaned || "Player";
+  const signature = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+  return concatBytes(
+    signature,
+    makePngChunk("IHDR", ihdr),
+    makePngChunk("IDAT", zlibStream),
+    makePngChunk("IEND", new Uint8Array(0))
+  );
 }
 
-function parseLobbyPlayer(p) {
-  const vps = toNum(p?.vps ?? p?.victoryPoints ?? p?.points, 0);
-  const team = toNum(p?.teamID ?? p?.coalitionID, 0);
-  const nation = String(p?.nationName ?? p?.countryName ?? "").trim();
-  const alliance = String(p?.allianceName ?? p?.allianceTag ?? p?.alliance ?? "").trim();
-  const siteUserID = toNum(p?.siteUserID ?? p?.userID ?? p?.id, 0);
-  const inlineEntry = buildPlayerStatEntry(p, siteUserID);
+function renderLobbyCardPng(gameId, players, statsById, statsStatusText) {
+  const rowHeight = 24;
+  const shown = players.slice(0, MAX_PLAYERS_RENDERED);
+  const width = 960;
+  const height = 132 + Math.max(1, shown.length) * rowHeight + 36;
 
-  return {
-    name: cleanName(p?.name),
-    vps,
-    team,
-    nation,
-    alliance,
-    siteUserID,
-    inlineEntry
-  };
-}
+  const canvas = new PixelCanvas(width, height, [15, 22, 34, 255]);
+  const panelBg = [23, 33, 49, 255];
+  const rowAlt = [19, 28, 42, 255];
+  const gold = [218, 175, 68, 255];
+  const white = [242, 245, 249, 255];
+  const muted = [156, 173, 198, 255];
+  const accent = [76, 175, 130, 255];
 
-function extractRawPlayers(data) {
-  const list = new Array();
-  for (const val of Object.values(data?.result?.states || {})) {
-    if (val && typeof val === "object" && val.players) {
-      for (const p of Object.values(val.players)) {
-        if (!p || typeof p !== "object" || p.computer) continue;
-        if (p.name && p.name !== "Unknown") list.push(p);
-      }
-      if (list.length > 0) break;
-    }
+  // Top branding banner
+  canvas.fillRect(0, 0, width, 76, [11, 16, 26, 255]);
+  canvas.fillRect(0, 74, width, 3, gold);
+  canvas.drawEmblem(16, 14, 46);
+  canvas.drawText(`${BRAND_TITLE} #${String(gameId)}`, 74, 18, white, 2);
+  canvas.drawText(`${BRAND_SUBTITLE}  |  PLAYERS: ${players.length}`, 74, 42, muted, 2);
+  canvas.drawText(statsStatusText, 530, 28, accent, 2);
+
+  // Table header
+  const tableTop = 88;
+  canvas.fillRect(16, tableTop, width - 32, rowHeight, panelBg);
+  canvas.drawText("PLAYER", 24, tableTop + 5, gold, 2);
+  canvas.drawText("NATION", 250, tableTop + 5, gold, 2);
+  canvas.drawText("VP", 440, tableTop + 5, gold, 2);
+  canvas.drawText("LV", 510, tableTop + 5, gold, 2);
+  canvas.drawText("W/P", 575, tableTop + 5, gold, 2);
+  canvas.drawText("WIN%", 675, tableTop + 5, gold, 2);
+  canvas.drawText("K/D", 775, tableTop + 5, gold, 2);
+  canvas.drawText("ALLY", 865, tableTop + 5, gold, 2);
+
+  if (shown.length === 0) {
+    canvas.fillRect(16, tableTop + rowHeight, width - 32, rowHeight, rowAlt);
+    canvas.drawText("NO PLAYERS FOUND IN LOBBY SNAPSHOT", 24, tableTop + rowHeight + 5, muted, 2);
+  } else {
+    shown.forEach((p, idx) => {
+      const y = tableTop + (idx + 1) * rowHeight;
+      if (idx % 2 === 1) canvas.fillRect(16, y, width - 32, rowHeight, rowAlt);
+      const st = statsById.get(p.userId);
+      const lv = st ? String(st.level) : "-";
+      const wp = st ? `${st.wins}/${st.gamesPlayed}` : "-";
+      const winPct = st ? `${st.winPct}%` : "-";
+      const kd = st ? st.kd : "-";
+      const ally = (st && st.alliance) || p.alliance || "-";
+
+      canvas.drawText(p.name.slice(0, 17), 24, y + 5, white, 2);
+      canvas.drawText((p.nation || "-").slice(0, 14), 250, y + 5, muted, 2);
+      canvas.drawText(String(p.vp), 440, y + 5, white, 2);
+      canvas.drawText(lv, 510, y + 5, white, 2);
+      canvas.drawText(wp, 575, y + 5, muted, 2);
+      canvas.drawText(winPct, 675, y + 5, accent, 2);
+      canvas.drawText(kd, 775, y + 5, white, 2);
+      canvas.drawText(ally.slice(0, 7), 865, y + 5, gold, 2);
+    });
   }
-  return list;
+
+  // Footer
+  const footerY = height - 26;
+  canvas.drawText(
+    `${BRAND_TAG} LOBBY MONITOR  |  SHOWING TOP ${shown.length} OF ${players.length}`,
+    16,
+    footerY,
+    muted,
+    2
+  );
+
+  return encodeCanvasToPng(canvas);
 }
+async function handleLobbyCommand(interaction, env, ctx) {
+  const cfg = getConfig(env);
+  const opts = (interaction.data && interaction.data.options) || [];
+  const gameOpt = opts.find((o) => o.name === "id" || o.name === "game_id" || o.name === "lobby");
+  const rawGameId = gameOpt ? String(gameOpt.value || "").trim() : "";
 
-async function fetchAndRespond(appId, token, gameId, env) {
-  try {
-    const session = await loginBytro(env);
-    let found = null;
-    const priority = Array.of(
-      12, 15, 14, 13, 11, 16, 10, 17, 9, 18, 8, 19, 7, 20, 6, 21, 5, 22, 4, 23, 3, 24, 2, 1
-    );
-
-    for (let i = 0; i < priority.length; i += 6) {
-      const batch = priority.slice(i, i + 6);
-      const results = await Promise.all(batch.map(num => checkServer(num, gameId, session)));
-      found = results.find(r => r !== null);
-      if (found) break;
-    }
-
-    if (!found) {
-      await sendDiscordText(appId, token, "Could not find Game ID " + gameId + " on servers 1-24.");
-      return;
-    }
-
-    const rawPlayers = extractRawPlayers(found.data);
-    if (rawPlayers.length === 0) {
-      await sendDiscordText(
-        appId,
-        token,
-        "Game ID " + gameId + " found on server " + found.serverNum + ", but no active players were returned."
-      );
-      return;
-    }
-
-    const players = rawPlayers.map(p => parseLobbyPlayer(p));
-    players.sort((a, b) => b.vps - a.vps);
-
-    const uids = players.map(p => p.siteUserID).filter(id => id > 0);
-    const batchRes = await fetchUserDetailsBatch(found.serverNum, gameId, uids, session);
-    const fetchedStats = batchRes.statsMap;
-
-    const combinedStats = new Map();
-    for (const p of players) {
-      if (!p.siteUserID) continue;
-      const fromBatch = fetchedStats.get(p.siteUserID);
-      const fromInline = p.inlineEntry;
-      combinedStats.set(p.siteUserID, {
-        kd: fromBatch && fromBatch.kd !== "-" ? fromBatch.kd : fromInline.kd,
-        winPct: fromBatch && fromBatch.winPct !== "-" ? fromBatch.winPct : fromInline.winPct,
-        level: fromBatch && fromBatch.level !== "-" ? fromBatch.level : fromInline.level,
-        sc: fromBatch?.sc === "Y" || fromInline?.sc === "Y" ? "Y" : "N",
-        played: fromBatch?.played || fromInline?.played || 0,
-        won: fromBatch?.won || fromInline?.won || 0,
-        alliance: p.alliance || fromBatch?.alliance || fromInline?.alliance || ""
-      });
-    }
-
-    const authPart = session && session.siteUserID ? "AUTH:" + (session.source || "OK") : "AUTH:" + (session?.error || "FAIL");
-    const statusInfo = authPart + " | STATS:" + fetchedStats.size + "/" + uids.length;
-    const serverMeta = extractServerMeta(found.data, found.serverNum, gameId);
-
-    const pngBytes = await buildBlackLobbyPng(
-      gameId,
-      found.serverNum,
-      players,
-      combinedStats,
-      statusInfo,
-      serverMeta
-    );
-    await sendDiscordImage(
-      appId,
-      token,
-      "**BlyatForceOne | Lobby " +
-        gameId +
-        "** (Server " +
-        found.serverNum +
-        " • " +
-        players.length +
-        " Active)",
-      pngBytes
-    );
-  } catch (fatalErr) {
-    try {
-      await sendDiscordText(appId, token, "Worker error: " + String(fatalErr).slice(0, 200));
-    } catch (e) {}
+  if (!/^\d{4,12}$/.test(rawGameId)) {
+    return jsonResponse({
+      type: 4,
+      data: {
+        content: "Please provide a valid numeric game/lobby ID, for example: `/lobby 10482910`.",
+        flags: 64,
+      },
+    });
   }
+
+  // Acknowledge immediately with a deferred response, then update via webhook
+  ctx.waitUntil((async () => {
+    const jar = buildCookieJar(cfg);
+    const stateRes = await fetchGameState(rawGameId, cfg, jar);
+
+    let pngBytes;
+    let contentText;
+
+    if (!stateRes.ok || !stateRes.data) {
+      const emptyCanvas = new PixelCanvas(760, 180, [15, 22, 34, 255]);
+      emptyCanvas.drawEmblem(16, 16, 46);
+      emptyCanvas.drawText(`${BRAND_TITLE} #${rawGameId}`, 74, 20, [242, 245, 249, 255], 2);
+      emptyCanvas.drawText("UNABLE TO FETCH GAME STATE FOR THIS LOBBY ID", 74, 46, [235, 95, 95, 255], 2);
+      emptyCanvas.drawText("CHECK LOBBY ID OR SESSION CREDENTIALS AND TRY AGAIN", 24, 100, [156, 173, 198, 255], 2);
+      pngBytes = encodeCanvasToPng(emptyCanvas);
+      contentText = `Could not load lobby **#${rawGameId}** (${stateRes.error || "unavailable"}).`;
+    } else {
+      const players = extractPlayersFromState(stateRes.data);
+      const statsRes = await resolvePlayerStats(players, rawGameId, cfg, jar);
+      pngBytes = renderLobbyCardPng(rawGameId, players, statsRes.statsById, statsRes.statusText);
+      contentText = `Lobby **#${rawGameId}** — **${players.length}** players found | ${statsRes.statusText}`;
+    }
+
+    const formData = new FormData();
+    formData.append(
+      "payload_json",
+      JSON.stringify({
+        content: contentText,
+        attachments: [{ id: 0, filename: `lobby-${rawGameId}.png` }],
+      })
+    );
+    formData.append(
+      "files[0]",
+      new Blob([pngBytes], { type: "image/png" }),
+      `lobby-${rawGameId}.png`
+    );
+
+    const webhookUrl = `https://discord.com/api/v10/webhooks/${interaction.application_id}/${interaction.token}/messages/@original`;
+    await fetchWithTimeout(webhookUrl, {
+      method: "PATCH",
+      body: formData,
+    });
+  })());
+
+  return jsonResponse({ type: 5 });
 }
 
 export default {
   async fetch(request, env, ctx) {
-    if (request.method !== "POST") {
-      return new Response("BlyatForceOne Bot Worker is active!", { status: 200 });
+    if (request.method === "GET") {
+      return new Response("Conflict of Nations Lobby Bot Worker is online.", { status: 200 });
     }
-    const bodyText = await request.text();
-    if (!(await verifyDiscordSignature(request, bodyText))) {
+    if (request.method !== "POST") {
+      return new Response("Method Not Allowed", { status: 405 });
+    }
+
+    const cfg = getConfig(env);
+    const rawBody = await request.text();
+    const signature = request.headers.get("X-Signature-Ed25519") || "";
+    const timestamp = request.headers.get("X-Signature-Timestamp") || "";
+
+    const validSig = await verifyDiscordSignature(
+      rawBody,
+      signature,
+      timestamp,
+      cfg.discordPublicKey
+    );
+    if (!validSig) {
       return new Response("Invalid request signature", { status: 401 });
     }
-    const interaction = safeJsonParse(bodyText);
-    if (!interaction) {
-      return new Response("Invalid JSON payload", { status: 400 });
+
+    const interaction = safeJsonParse(rawBody);
+    if (!interaction || typeof interaction !== "object") {
+      return new Response("Bad Request", { status: 400 });
     }
+
+    // Discord PING
     if (interaction.type === 1) {
-      return new Response(JSON.stringify({ type: 1 }), {
-        headers: { "Content-Type": "application/json" }
-      });
+      return jsonResponse({ type: 1 });
     }
-    if (interaction.type === 2 && interaction.data?.name === "lobby") {
-      const cleanId = String(interaction.data.options?.at(0)?.value || "").replace(/\D/g, "");
-      if (!cleanId) {
-        return new Response(
-          JSON.stringify({
-            type: 4,
-            data: { content: "Please enter a valid Game ID number, e.g. /lobby 10956179." }
-          }),
-          { headers: { "Content-Type": "application/json" } }
-        );
-      }
-      ctx.waitUntil(fetchAndRespond(interaction.application_id, interaction.token, cleanId, env));
-      return new Response(JSON.stringify({ type: 5 }), {
-        headers: { "Content-Type": "application/json" }
-      });
+
+    // Slash commands
+    if (interaction.type === 2 && interaction.data && interaction.data.name === "lobby") {
+      return handleLobbyCommand(interaction, env, ctx);
     }
-    return new Response("Unknown command", { status: 400 });
-  }
+
+    return jsonResponse({
+      type: 4,
+      data: { content: "Unsupported command.", flags: 64 },
+    });
+  },
 };
+
 
 
 
