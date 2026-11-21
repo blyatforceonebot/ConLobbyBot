@@ -11,9 +11,9 @@ const BRAND_TITLE = "CONFLICT OF NATIONS LOBBY";
 const BRAND_SUBTITLE = "LIVE MATCH & PLAYER STATS";
 const BRAND_TAG = "BFO";
 
-const MAX_PLAYERS_RENDERED = 24;
-const STATS_BATCH_SIZE = 12;
-const REQUEST_TIMEOUT_MS = 10000;
+const MAX_PLAYERS_RENDERED = 64;
+const STATS_BATCH_SIZE = 16;
+const REQUEST_TIMEOUT_MS = 4500;
 
 function getConfig(env = {}) {
   return {
@@ -230,16 +230,20 @@ async function fetchGameState(gameId, cfg, jar) {
         });
 
     try {
-      const resp = await fetchWithTimeout(url, {
-        method: body ? "POST" : "GET",
-        headers: {
-          "Content-Type": body ? "application/json" : "application/x-www-form-urlencoded",
-          "Cookie": jar.toHeader(),
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-          "Referer": "https://www.conflictnations.com/",
+      const resp = await fetchWithTimeout(
+        url,
+        {
+          method: body ? "POST" : "GET",
+          headers: {
+            "Content-Type": body ? "application/json" : "application/x-www-form-urlencoded",
+            "Cookie": jar.toHeader(),
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": "https://www.conflictnations.com/",
+          },
+          body,
         },
-        body,
-      });
+        3500
+      );
       jar.ingestSetCookieHeaders(resp.headers);
       if (!resp.ok) continue;
       const text = await resp.text();
@@ -248,7 +252,7 @@ async function fetchGameState(gameId, cfg, jar) {
         return { ok: true, data: parsed, source: host };
       }
     } catch (_) {
-      // Try next candidate
+      // Move quickly to next candidate
     }
   }
   return { ok: false, data: null, error: "Unable to load lobby state" };
@@ -352,13 +356,6 @@ function parseUserStatsRecord(userObj) {
     ""
   ).trim();
 
-  const isSc = Boolean(
-    userObj.hasSecurityCouncil ||
-    userObj.securityCouncil ||
-    userObj.sc ||
-    (userObj.subscription && userObj.subscription.sc)
-  );
-
   return {
     userId: id,
     username: String(userObj.username || userObj.userName || "").trim(),
@@ -370,7 +367,6 @@ function parseUserStatsRecord(userObj) {
     losses,
     kd,
     alliance: allianceTag,
-    sc: isSc,
   };
 }
 async function fetchStatsViaFirefly(userIds, cfg, jar) {
@@ -393,17 +389,21 @@ async function fetchStatsViaFirefly(userIds, cfg, jar) {
   const formBody = new URLSearchParams({ data: encodedData });
 
   try {
-    const resp = await fetchWithTimeout(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-        "Cookie": jar.toHeader(),
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Origin": "https://www.conflictnations.com",
-        "Referer": "https://www.conflictnations.com/",
+    const resp = await fetchWithTimeout(
+      url,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+          "Cookie": jar.toHeader(),
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+          "Origin": "https://www.conflictnations.com",
+          "Referer": "https://www.conflictnations.com/",
+        },
+        body: formBody.toString(),
       },
-      body: formBody.toString(),
-    });
+      3500
+    );
     jar.ingestSetCookieHeaders(resp.headers);
 
     const text = await resp.text();
@@ -449,27 +449,30 @@ async function resolvePlayerStats(players, gameId, cfg, jar) {
     return { statsById, statusText: "STATS: 0/0 (NO PLAYERS)" };
   }
 
-  // Primary attempt via UltGetUserDetailsAction on game server
   let rpcError = "";
   try {
     const rpcUrl = `https://congs${String(gameId || "").trim()}.c.bytro.com/`;
-    const resp = await fetchWithTimeout(rpcUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Cookie": jar.toHeader(),
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Referer": "https://www.conflictnations.com/",
+    const resp = await fetchWithTimeout(
+      rpcUrl,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Cookie": jar.toHeader(),
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+          "Referer": "https://www.conflictnations.com/",
+        },
+        body: JSON.stringify({
+          gameID: Number(gameId) || gameId,
+          siteUserID: Number(cfg.conUid) || 0,
+          userAuth: cfg.conAuth,
+          client: cfg.client,
+          version: cfg.version,
+          actions: [{ action: "UltGetUserDetailsAction", userIDs: targetIds }],
+        }),
       },
-      body: JSON.stringify({
-        gameID: Number(gameId) || gameId,
-        siteUserID: Number(cfg.conUid) || 0,
-        userAuth: cfg.conAuth,
-        client: cfg.client,
-        version: cfg.version,
-        actions: [{ action: "UltGetUserDetailsAction", userIDs: targetIds }],
-      }),
-    });
+      3000
+    );
     jar.ingestSetCookieHeaders(resp.headers);
     const text = await resp.text();
     const parsed = safeJsonParse(text);
@@ -489,7 +492,6 @@ async function resolvePlayerStats(players, gameId, cfg, jar) {
     rpcError = String(err && err.message ? err.message : err);
   }
 
-  // Fallback to getUserDetailsFirefly if primary lookup returned no stats
   let fireflyError = "";
   if (statsById.size === 0) {
     const ff = await fetchStatsViaFirefly(targetIds, cfg, jar);
@@ -504,7 +506,7 @@ async function resolvePlayerStats(players, gameId, cfg, jar) {
   let statusText = `STATS: ${loadedCount}/${totalCount}`;
   if (loadedCount === 0) {
     const reason = fireflyError || rpcError || "AUTH CHECK";
-    statusText = `STATS: 0/${totalCount} (${reason.slice(0, 28).toUpperCase()})`;
+    statusText = `STATS: 0/${totalCount} (${reason.slice(0, 26).toUpperCase()})`;
   }
 
   return { statsById, statusText };
@@ -713,11 +715,10 @@ function encodeCanvasToPng(canvas) {
   for (let y = 0; y < height; y++) {
     const srcStart = y * width * 4;
     const dstStart = y * rowStride;
-    rawScanlines[dstStart] = 0; // Filter type 0 (None)
+    rawScanlines[dstStart] = 0;
     rawScanlines.set(pixels.subarray(srcStart, srcStart + width * 4), dstStart + 1);
   }
 
-  // Wrap raw scanlines in uncompressed DEFLATE blocks inside a zlib stream
   const maxBlock = 65535;
   const numBlocks = Math.max(1, Math.ceil(rawScanlines.length / maxBlock));
   const deflateBlocks = [];
@@ -746,8 +747,8 @@ function encodeCanvasToPng(canvas) {
   const ihdrView = new DataView(ihdr.buffer);
   ihdrView.setUint32(0, width, false);
   ihdrView.setUint32(4, height, false);
-  ihdr[8] = 8; // bit depth
-  ihdr[9] = 6; // RGBA
+  ihdr[8] = 8;
+  ihdr[9] = 6;
   ihdr[10] = 0;
   ihdr[11] = 0;
   ihdr[12] = 0;
@@ -762,10 +763,10 @@ function encodeCanvasToPng(canvas) {
 }
 
 function renderLobbyCardPng(gameId, players, statsById, statsStatusText) {
-  const rowHeight = 24;
+  const rowHeight = 22;
   const shown = players.slice(0, MAX_PLAYERS_RENDERED);
   const width = 960;
-  const height = 132 + Math.max(1, shown.length) * rowHeight + 36;
+  const height = 128 + Math.max(1, shown.length) * rowHeight + 34;
 
   const canvas = new PixelCanvas(width, height, [15, 22, 34, 255]);
   const panelBg = [23, 33, 49, 255];
@@ -775,29 +776,27 @@ function renderLobbyCardPng(gameId, players, statsById, statsStatusText) {
   const muted = [156, 173, 198, 255];
   const accent = [76, 175, 130, 255];
 
-  // Top branding banner
-  canvas.fillRect(0, 0, width, 76, [11, 16, 26, 255]);
-  canvas.fillRect(0, 74, width, 3, gold);
-  canvas.drawEmblem(16, 14, 46);
-  canvas.drawText(`${BRAND_TITLE} #${String(gameId)}`, 74, 18, white, 2);
-  canvas.drawText(`${BRAND_SUBTITLE}  |  PLAYERS: ${players.length}`, 74, 42, muted, 2);
-  canvas.drawText(statsStatusText, 530, 28, accent, 2);
+  canvas.fillRect(0, 0, width, 74, [11, 16, 26, 255]);
+  canvas.fillRect(0, 72, width, 3, gold);
+  canvas.drawEmblem(16, 13, 46);
+  canvas.drawText(`${BRAND_TITLE} #${String(gameId)}`, 74, 17, white, 2);
+  canvas.drawText(`${BRAND_SUBTITLE}  |  PLAYERS: ${players.length}`, 74, 41, muted, 2);
+  canvas.drawText(statsStatusText, 520, 27, accent, 2);
 
-  // Table header
-  const tableTop = 88;
+  const tableTop = 84;
   canvas.fillRect(16, tableTop, width - 32, rowHeight, panelBg);
-  canvas.drawText("PLAYER", 24, tableTop + 5, gold, 2);
-  canvas.drawText("NATION", 250, tableTop + 5, gold, 2);
-  canvas.drawText("VP", 440, tableTop + 5, gold, 2);
-  canvas.drawText("LV", 510, tableTop + 5, gold, 2);
-  canvas.drawText("W/P", 575, tableTop + 5, gold, 2);
-  canvas.drawText("WIN%", 675, tableTop + 5, gold, 2);
-  canvas.drawText("K/D", 775, tableTop + 5, gold, 2);
-  canvas.drawText("ALLY", 865, tableTop + 5, gold, 2);
+  canvas.drawText("PLAYER", 24, tableTop + 4, gold, 2);
+  canvas.drawText("NATION", 250, tableTop + 4, gold, 2);
+  canvas.drawText("VP", 440, tableTop + 4, gold, 2);
+  canvas.drawText("LV", 510, tableTop + 4, gold, 2);
+  canvas.drawText("W/P", 575, tableTop + 4, gold, 2);
+  canvas.drawText("WIN%", 675, tableTop + 4, gold, 2);
+  canvas.drawText("K/D", 775, tableTop + 4, gold, 2);
+  canvas.drawText("ALLY", 865, tableTop + 4, gold, 2);
 
   if (shown.length === 0) {
     canvas.fillRect(16, tableTop + rowHeight, width - 32, rowHeight, rowAlt);
-    canvas.drawText("NO PLAYERS FOUND IN LOBBY SNAPSHOT", 24, tableTop + rowHeight + 5, muted, 2);
+    canvas.drawText("NO PLAYERS FOUND IN LOBBY SNAPSHOT", 24, tableTop + rowHeight + 4, muted, 2);
   } else {
     shown.forEach((p, idx) => {
       const y = tableTop + (idx + 1) * rowHeight;
@@ -809,19 +808,18 @@ function renderLobbyCardPng(gameId, players, statsById, statsStatusText) {
       const kd = st ? st.kd : "-";
       const ally = (st && st.alliance) || p.alliance || "-";
 
-      canvas.drawText(p.name.slice(0, 17), 24, y + 5, white, 2);
-      canvas.drawText((p.nation || "-").slice(0, 14), 250, y + 5, muted, 2);
-      canvas.drawText(String(p.vp), 440, y + 5, white, 2);
-      canvas.drawText(lv, 510, y + 5, white, 2);
-      canvas.drawText(wp, 575, y + 5, muted, 2);
-      canvas.drawText(winPct, 675, y + 5, accent, 2);
-      canvas.drawText(kd, 775, y + 5, white, 2);
-      canvas.drawText(ally.slice(0, 7), 865, y + 5, gold, 2);
+      canvas.drawText(p.name.slice(0, 17), 24, y + 4, white, 2);
+      canvas.drawText((p.nation || "-").slice(0, 14), 250, y + 4, muted, 2);
+      canvas.drawText(String(p.vp), 440, y + 4, white, 2);
+      canvas.drawText(lv, 510, y + 4, white, 2);
+      canvas.drawText(wp, 575, y + 4, muted, 2);
+      canvas.drawText(winPct, 675, y + 4, accent, 2);
+      canvas.drawText(kd, 775, y + 4, white, 2);
+      canvas.drawText(ally.slice(0, 7), 865, y + 4, gold, 2);
     });
   }
 
-  // Footer
-  const footerY = height - 26;
+  const footerY = height - 24;
   canvas.drawText(
     `${BRAND_TAG} LOBBY MONITOR  |  SHOWING TOP ${shown.length} OF ${players.length}`,
     16,
@@ -832,36 +830,22 @@ function renderLobbyCardPng(gameId, players, statsById, statsStatusText) {
 
   return encodeCanvasToPng(canvas);
 }
-async function handleLobbyCommand(interaction, env, ctx) {
+async function processAndPostLobbyCard(interaction, rawGameId, env) {
   const cfg = getConfig(env);
-  const opts = (interaction.data && interaction.data.options) || [];
-  const gameOpt = opts.find((o) => o.name === "id" || o.name === "game_id" || o.name === "lobby");
-  const rawGameId = gameOpt ? String(gameOpt.value || "").trim() : "";
+  const jar = buildCookieJar(cfg);
+  const webhookUrl = `https://discord.com/api/v10/webhooks/${interaction.application_id}/${interaction.token}/messages/@original`;
 
-  if (!/^\d{4,12}$/.test(rawGameId)) {
-    return jsonResponse({
-      type: 4,
-      data: {
-        content: "Please provide a valid numeric game/lobby ID, for example: `/lobby 10482910`.",
-        flags: 64,
-      },
-    });
-  }
+  let pngBytes;
+  let contentText;
 
-  // Acknowledge immediately with a deferred response, then update via webhook
-  ctx.waitUntil((async () => {
-    const jar = buildCookieJar(cfg);
+  try {
     const stateRes = await fetchGameState(rawGameId, cfg, jar);
-
-    let pngBytes;
-    let contentText;
-
     if (!stateRes.ok || !stateRes.data) {
-      const emptyCanvas = new PixelCanvas(760, 180, [15, 22, 34, 255]);
+      const emptyCanvas = new PixelCanvas(760, 170, [15, 22, 34, 255]);
       emptyCanvas.drawEmblem(16, 16, 46);
       emptyCanvas.drawText(`${BRAND_TITLE} #${rawGameId}`, 74, 20, [242, 245, 249, 255], 2);
       emptyCanvas.drawText("UNABLE TO FETCH GAME STATE FOR THIS LOBBY ID", 74, 46, [235, 95, 95, 255], 2);
-      emptyCanvas.drawText("CHECK LOBBY ID OR SESSION CREDENTIALS AND TRY AGAIN", 24, 100, [156, 173, 198, 255], 2);
+      emptyCanvas.drawText("CHECK LOBBY ID OR SESSION CREDENTIALS AND TRY AGAIN", 24, 96, [156, 173, 198, 255], 2);
       pngBytes = encodeCanvasToPng(emptyCanvas);
       contentText = `Could not load lobby **#${rawGameId}** (${stateRes.error || "unavailable"}).`;
     } else {
@@ -870,28 +854,50 @@ async function handleLobbyCommand(interaction, env, ctx) {
       pngBytes = renderLobbyCardPng(rawGameId, players, statsRes.statsById, statsRes.statusText);
       contentText = `Lobby **#${rawGameId}** — **${players.length}** players found | ${statsRes.statusText}`;
     }
+  } catch (err) {
+    const errCanvas = new PixelCanvas(760, 170, [15, 22, 34, 255]);
+    errCanvas.drawEmblem(16, 16, 46);
+    errCanvas.drawText(`${BRAND_TITLE} #${rawGameId}`, 74, 20, [242, 245, 249, 255], 2);
+    errCanvas.drawText("LOBBY REQUEST TIMED OUT OR FAILED", 74, 46, [235, 95, 95, 255], 2);
+    errCanvas.drawText(String(err && err.message ? err.message : "WORKER ERROR").slice(0, 56).toUpperCase(), 24, 96, [156, 173, 198, 255], 2);
+    pngBytes = encodeCanvasToPng(errCanvas);
+    contentText = `Lobby **#${rawGameId}** encountered a timeout while fetching data.`;
+  }
 
-    const formData = new FormData();
-    formData.append(
-      "payload_json",
-      JSON.stringify({
-        content: contentText,
-        attachments: [{ id: 0, filename: `lobby-${rawGameId}.png` }],
-      })
-    );
-    formData.append(
-      "files[0]",
-      new Blob([pngBytes], { type: "image/png" }),
-      `lobby-${rawGameId}.png`
-    );
+  const formData = new FormData();
+  formData.append(
+    "payload_json",
+    JSON.stringify({
+      content: contentText,
+      attachments: [{ id: 0, filename: `lobby-${rawGameId}.png` }],
+    })
+  );
+  formData.append(
+    "files[0]",
+    new Blob([pngBytes], { type: "image/png" }),
+    `lobby-${rawGameId}.png`
+  );
 
-    const webhookUrl = `https://discord.com/api/v10/webhooks/${interaction.application_id}/${interaction.token}/messages/@original`;
-    await fetchWithTimeout(webhookUrl, {
-      method: "PATCH",
-      body: formData,
+  await fetchWithTimeout(webhookUrl, { method: "PATCH", body: formData }, 8000);
+}
+
+function handleLobbyCommand(interaction, env, ctx) {
+  const opts = (interaction.data && interaction.data.options) || [];
+  const gameOpt = opts.find((o) => o.name === "id" || o.name === "game_id" || o.name === "lobby");
+  const rawGameId = gameOpt ? String(gameOpt.value || "").trim() : "";
+
+  if (!/^\d{4,12}$/.test(rawGameId)) {
+    return jsonResponse({
+      type: 4,
+      data: {
+        content: "Please provide a valid numeric game/lobby ID, for example: `/lobby 10956179`.",
+        flags: 64,
+      },
     });
-  })());
+  }
 
+  // Defer immediately so Discord never times out within 3 seconds
+  ctx.waitUntil(processAndPostLobbyCard(interaction, rawGameId, env));
   return jsonResponse({ type: 5 });
 }
 
@@ -924,12 +930,10 @@ export default {
       return new Response("Bad Request", { status: 400 });
     }
 
-    // Discord PING
     if (interaction.type === 1) {
       return jsonResponse({ type: 1 });
     }
 
-    // Slash commands
     if (interaction.type === 2 && interaction.data && interaction.data.name === "lobby") {
       return handleLobbyCommand(interaction, env, ctx);
     }
@@ -940,6 +944,7 @@ export default {
     });
   },
 };
+
 
 
 
