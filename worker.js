@@ -33,7 +33,6 @@ async function verifyDiscordSignature(request, bodyText) {
   }
   return false;
 }
-
 async function sendDiscordText(appId, token, content) {
   const path = Array.of("api", "v10", "webhooks", appId, token, "messages", "@original").join("/");
   await fetch(new URL(path, "https://discord.com").toString(), {
@@ -49,8 +48,14 @@ async function sendDiscordText(appId, token, content) {
 async function sendDiscordImage(appId, token, caption, pngBuffer) {
   const path = Array.of("api", "v10", "webhooks", appId, token, "messages", "@original").join("/");
   const form = new FormData();
-  form.append("payload_json", JSON.stringify({ content: String(caption || "").slice(0, 1990) }));
-  form.append("files", new Blob(Array.of(pngBuffer), { type: "image/png" }), "lobby.png");
+  form.append(
+    "payload_json",
+    JSON.stringify({
+      content: String(caption || "").slice(0, 1990),
+      attachments: [{ id: 0, filename: "lobby.png" }]
+    })
+  );
+  form.append("files[0]", new Blob(Array.of(pngBuffer), { type: "image/png" }), "lobby.png");
   await fetch(new URL(path, "https://discord.com").toString(), {
     method: "PATCH",
     headers: { "User-Agent": "DiscordBot (https://workers.dev, 1.0)" },
@@ -58,20 +63,40 @@ async function sendDiscordImage(appId, token, caption, pngBuffer) {
   });
 }
 
+function safeJsonParse(raw) {
+  try {
+    return JSON.parse(raw);
+  } catch (e) {
+    return null;
+  }
+}
+
 function extractSessionFromText(text) {
   const raw = String(text || "");
-  try {
-    const json = JSON.parse(raw);
+  const json = safeJsonParse(raw);
+  if (json && typeof json === "object") {
     const uidJson = Number(
-      json?.siteUserID ?? json?.userID ?? json?.uid ?? json?.user?.siteUserID ?? json?.user?.userID ?? 0
+      json?.siteUserID ??
+        json?.userID ??
+        json?.uid ??
+        json?.user?.siteUserID ??
+        json?.user?.userID ??
+        json?.data?.siteUserID ??
+        0
     );
     const authJson = String(
-      json?.userAuth ?? json?.auth ?? json?.uberAuth ?? json?.token ?? json?.sessionAuth ?? ""
+      json?.userAuth ??
+        json?.auth ??
+        json?.uberAuth ??
+        json?.token ??
+        json?.sessionAuth ??
+        json?.user?.userAuth ??
+        ""
     ).trim();
     if (uidJson > 0 && authJson) {
       return { siteUserID: uidJson, userAuth: authJson, version: 420 };
     }
-  } catch (e) {}
+  }
 
   const uidMatch = raw.match(/(?:siteUserID|userID|uid)["'=:\s]+(\d{5,12})/i);
   const authMatch =
@@ -145,10 +170,15 @@ function toNum(val, fallback = 0) {
   if (typeof val === "number" && Number.isFinite(val)) return val;
   if (typeof val === "string") {
     const cleaned = val.replace("%", "").replace(",", ".").trim();
+    if (!cleaned) return fallback;
     const n = Number(cleaned);
     if (Number.isFinite(n)) return n;
   }
   return fallback;
+}
+
+function hasValue(val) {
+  return val !== undefined && val !== null && String(val).trim() !== "";
 }
 
 function parseScFlag(obj) {
@@ -163,7 +193,8 @@ function parseScFlag(obj) {
     obj?.isPremium,
     obj?.profile?.securityCouncil,
     obj?.profile?.sc,
-    obj?.stats?.securityCouncil
+    obj?.stats?.securityCouncil,
+    obj?.user?.securityCouncil
   );
   for (const c of candidates) {
     if (c === true) return true;
@@ -177,29 +208,61 @@ function parseScFlag(obj) {
 }
 
 function buildPlayerStatEntry(rawObj, fallbackId = 0) {
-  const u = rawObj?.user || rawObj?.player || rawObj?.profile || rawObj?.result || rawObj || {};
-  const stats = u?.stats || u?.statistics || u?.career || {};
-  const uid = toNum(u?.userID ?? u?.siteUserID ?? u?.id ?? rawObj?.userID ?? rawObj?.siteUserID, fallbackId);
+  const u = rawObj?.user || rawObj?.player || rawObj?.profile || rawObj?.userDetails || rawObj?.result || rawObj || {};
+  const stats = u?.stats || u?.statistics || u?.career || u?.playerStats || rawObj?.stats || {};
+  const uid = toNum(
+    u?.userID ?? u?.siteUserID ?? u?.id ?? rawObj?.userID ?? rawObj?.siteUserID ?? rawObj?.requestedUserID,
+    fallbackId
+  );
 
   const kills = toNum(
-    u?.kills ?? u?.unitsKilled ?? u?.enemiesKilled ?? stats?.kills ?? stats?.unitsKilled,
+    u?.kills ??
+      u?.unitsKilled ??
+      u?.enemiesKilled ??
+      u?.enemyUnitsKilled ??
+      stats?.kills ??
+      stats?.unitsKilled ??
+      stats?.enemiesKilled,
     0
   );
   const losses = toNum(
-    u?.losses ?? u?.deaths ?? u?.unitsLost ?? stats?.losses ?? stats?.deaths ?? stats?.unitsLost,
+    u?.losses ??
+      u?.deaths ??
+      u?.unitsLost ??
+      u?.ownUnitsLost ??
+      stats?.losses ??
+      stats?.deaths ??
+      stats?.unitsLost,
     0
   );
 
-  const rawKd = u?.kd ?? u?.kdRatio ?? u?.kdr ?? stats?.kd ?? stats?.kdRatio;
-  const kd =
-    rawKd !== undefined && rawKd !== null && String(rawKd).trim() !== ""
-      ? toNum(rawKd, 0).toFixed(2)
-      : losses > 0
-      ? (kills / losses).toFixed(2)
-      : kills.toFixed(2);
+  const rawKd =
+    u?.kd ??
+    u?.kdRatio ??
+    u?.kdr ??
+    u?.killDeathRatio ??
+    stats?.kd ??
+    stats?.kdRatio ??
+    stats?.kdr;
+  const hasKd = hasValue(rawKd) || kills > 0 || losses > 0;
+  const kd = hasValue(rawKd)
+    ? toNum(rawKd, 0).toFixed(2)
+    : losses > 0
+    ? (kills / losses).toFixed(2)
+    : kills > 0
+    ? kills.toFixed(2)
+    : hasKd
+    ? "0.00"
+    : "-";
 
   const played = toNum(
-    u?.gamesPlayed ?? u?.roundsPlayed ?? u?.matchesPlayed ?? u?.joined ?? stats?.gamesPlayed ?? stats?.roundsPlayed,
+    u?.gamesPlayed ??
+      u?.roundsPlayed ??
+      u?.matchesPlayed ??
+      u?.joined ??
+      u?.totalGames ??
+      stats?.gamesPlayed ??
+      stats?.roundsPlayed,
     0
   );
   const soloWins = toNum(u?.soloWins ?? u?.winsSolo ?? stats?.soloWins ?? 0, 0);
@@ -210,34 +273,50 @@ function buildPlayerStatEntry(rawObj, fallbackId = 0) {
   );
   const won = explicitWon >= 0 ? explicitWon : soloWins + coalitionWins;
 
-  const rawWinRate = u?.winRate ?? u?.winrate ?? stats?.winRate ?? stats?.winrate;
-  let winPct = "0%";
-  if (rawWinRate !== undefined && rawWinRate !== null && String(rawWinRate).trim() !== "") {
+  const rawWinRate =
+    u?.winRate ?? u?.winrate ?? u?.winRatio ?? stats?.winRate ?? stats?.winrate ?? stats?.winRatio;
+  let winPct = "-";
+  if (hasValue(rawWinRate)) {
     const numWin = toNum(rawWinRate, 0);
     winPct = Math.round(numWin <= 1 && numWin > 0 ? numWin * 100 : numWin) + "%";
   } else if (played > 0) {
     winPct = Math.round((won / played) * 100) + "%";
   }
 
-  const level = toNum(u?.rank ?? u?.level ?? u?.userLevel ?? u?.playerLevel ?? stats?.rank ?? stats?.level, 0);
+  const rawLevel =
+    u?.rank ??
+    u?.level ??
+    u?.userLevel ??
+    u?.playerLevel ??
+    u?.experienceLevel ??
+    stats?.rank ??
+    stats?.level;
+  const levelNum = toNum(rawLevel, 0);
   const hasSC = parseScFlag(u) || parseScFlag(rawObj);
   const alliance = String(
-    u?.allianceName ?? u?.allianceTag ?? u?.alliance ?? rawObj?.allianceName ?? ""
+    u?.allianceName ??
+      u?.allianceTag ??
+      u?.alliance ??
+      rawObj?.allianceName ??
+      rawObj?.allianceTag ??
+      ""
   ).trim();
 
   return {
     uid,
     kd,
     winPct,
-    level: level > 0 ? level : "-",
+    level: levelNum > 0 ? levelNum : "-",
     sc: hasSC ? "Y" : "N",
     played,
+    won,
+    kills,
+    losses,
     soloWins,
     coalitionWins,
     alliance
   };
 }
-
 async function checkServer(serverNum, gameId, session) {
   const validSession = session && session.siteUserID ? session : null;
   const url = new URL("/", "https://congs" + serverNum + ".c.bytro.com").toString();
@@ -272,38 +351,30 @@ async function checkServer(serverNum, gameId, session) {
     if (!resp.ok) return null;
     const text = await resp.text();
     if (text.includes("players") || text.includes("UltPlayerProfile") || text.includes("nationName")) {
-      return { serverNum, data: JSON.parse(text) };
+      const parsed = safeJsonParse(text);
+      if (parsed) return { serverNum, data: parsed };
     }
   } catch (e) {}
   return null;
 }
 
-function extractActionItems(data) {
-  const buckets = Array.of(
-    data?.result?.actions,
-    data?.result?.results,
-    data?.actions,
-    data?.results,
-    data?.result
-  );
-  const collected = new Array();
-  for (const b of buckets) {
-    if (!b) continue;
-    if (Array.isArray(b)) {
-      for (const item of b) {
-        if (item && typeof item === "object" && !Array.isArray(item)) collected.push(item);
-      }
-    } else if (typeof b === "object") {
-      for (const val of Object.values(b)) {
-        if (Array.isArray(val)) {
-          for (const item of val) {
-            if (item && typeof item === "object" && !Array.isArray(item)) collected.push(item);
-          }
-        }
+function collectCandidateObjects(node, out, depth = 0) {
+  if (!node || typeof node !== "object" || depth > 5) return;
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      if (item && typeof item === "object" && !Array.isArray(item)) {
+        out.push(item);
+        collectCandidateObjects(item, out, depth + 1);
       }
     }
+    return;
   }
-  return collected;
+  for (const val of Object.values(node)) {
+    if (val && typeof val === "object") {
+      if (!Array.isArray(val)) out.push(val);
+      collectCandidateObjects(val, out, depth + 1);
+    }
+  }
 }
 
 async function fetchUserDetailsBatch(serverNum, gameId, siteUserIDs, session) {
@@ -353,16 +424,31 @@ async function fetchUserDetailsBatch(serverNum, gameId, siteUserIDs, session) {
         body: JSON.stringify(payload)
       });
       if (!resp.ok) continue;
-      const data = await resp.json();
-      const items = extractActionItems(data);
+      const text = await resp.text();
+      const data = safeJsonParse(text);
+      if (!data) continue;
 
-      items.forEach((item, idx) => {
-        const fallbackUid = toNum(chunk.at(idx), 0);
-        const entry = buildPlayerStatEntry(item, fallbackUid);
-        if (entry.uid > 0) {
-          statsMap.set(entry.uid, entry);
+      const candidates = new Array();
+      collectCandidateObjects(data?.result ?? data, candidates, 0);
+
+      for (const obj of candidates) {
+        const entry = buildPlayerStatEntry(obj, 0);
+        if (entry.uid > 0 && chunk.includes(entry.uid)) {
+          const prev = statsMap.get(entry.uid);
+          statsMap.set(entry.uid, {
+            uid: entry.uid,
+            kd: entry.kd !== "-" ? entry.kd : prev?.kd || "-",
+            winPct: entry.winPct !== "-" ? entry.winPct : prev?.winPct || "-",
+            level: entry.level !== "-" ? entry.level : prev?.level || "-",
+            sc: entry.sc === "Y" || prev?.sc === "Y" ? "Y" : "N",
+            played: entry.played || prev?.played || 0,
+            won: entry.won || prev?.won || 0,
+            kills: entry.kills || prev?.kills || 0,
+            losses: entry.losses || prev?.losses || 0,
+            alliance: entry.alliance || prev?.alliance || ""
+          });
         }
-      });
+      }
     } catch (e) {}
   }
 
@@ -385,11 +471,10 @@ const FONT_HEX = {
   "U": "3f4040403f", "V": "1f2040201f", "W": "3f4038403f", "X": "6314081463",
   "Y": "0708700807", "Z": "6151494543"
 };
-
-async function buildBlackLobbyPng(gameId, serverNum, players, statsMap, authStatus) {
+async function buildBlackLobbyPng(gameId, serverNum, players, statsMap, statusInfo) {
   const maxRows = Math.min(players.length, 64);
   const scale = 2;
-  const width = 1120;
+  const width = 1240;
   const rowH = 24;
   const headerH = 66;
   const height = headerH + maxRows * rowH + 16;
@@ -428,7 +513,7 @@ async function buildBlackLobbyPng(gameId, serverNum, players, statsMap, authStat
 
   fillRect(0, 38, width, 24, 24, 24, 24);
   drawText(
-    "BLYATFORCEONE - LOBBY #" + gameId + " (S" + serverNum + " | " + players.length + " ACTIVE | " + authStatus + ")",
+    "BLYATFORCEONE - LOBBY #" + gameId + " (S" + serverNum + " | " + players.length + " ACTIVE | " + statusInfo + ")",
     16,
     14,
     255,
@@ -437,14 +522,16 @@ async function buildBlackLobbyPng(gameId, serverNum, players, statsMap, authStat
   );
   drawText("#", 16, 43, 220, 220, 220);
   drawText("PLAYER", 56, 43, 220, 220, 220);
-  drawText("ALLIANCE", 245, 43, 220, 220, 220);
-  drawText("NATION", 420, 43, 220, 220, 220);
-  drawText("VP", 610, 43, 220, 220, 220);
-  drawText("TEAM", 680, 43, 220, 220, 220);
-  drawText("K/D", 765, 43, 220, 220, 220);
-  drawText("WIN%", 850, 43, 220, 220, 220);
-  drawText("LV", 945, 43, 220, 220, 220);
-  drawText("SC", 1020, 43, 220, 220, 220);
+  drawText("ALLIANCE", 240, 43, 220, 220, 220);
+  drawText("NATION", 410, 43, 220, 220, 220);
+  drawText("VP", 590, 43, 220, 220, 220);
+  drawText("TEAM", 655, 43, 220, 220, 220);
+  drawText("K/D", 730, 43, 220, 220, 220);
+  drawText("WIN%", 815, 43, 220, 220, 220);
+  drawText("W/P", 900, 43, 220, 220, 220);
+  drawText("LV", 995, 43, 220, 220, 220);
+  drawText("SC", 1065, 43, 220, 220, 220);
+  drawText("UID", 1125, 43, 220, 220, 220);
 
   for (let i = 0; i < maxRows; i++) {
     const p = players.at(i);
@@ -453,23 +540,28 @@ async function buildBlackLobbyPng(gameId, serverNum, players, statsMap, authStat
       winPct: "-",
       level: "-",
       sc: "-",
+      played: 0,
+      won: 0,
       alliance: ""
     };
     const allianceLabel = (p.alliance || st.alliance || "-").slice(0, 14);
+    const wpLabel = st.played > 0 ? (st.won + "/" + st.played) : "-";
     const y = headerH + i * rowH;
     if (i % 2 === 1) fillRect(0, y, width, rowH, 14, 14, 14);
     fillRect(12, y + rowH - 1, width - 24, 1, 35, 35, 35);
     const ty = y + 5;
     drawText(String(i + 1), 16, ty, 180, 180, 180);
     drawText(String(p.name || "Player").slice(0, 15), 56, ty, 255, 255, 255);
-    drawText(allianceLabel, 245, ty, 200, 220, 255);
-    drawText(String(p.nation || "-").slice(0, 15), 420, ty, 230, 230, 230);
-    drawText(String(p.vps), 610, ty, 255, 255, 255);
-    drawText(p.team > 0 ? ("T" + p.team) : "-", 680, ty, 200, 200, 200);
-    drawText(String(st.kd), 765, ty, 255, 255, 255);
-    drawText(String(st.winPct), 850, ty, 255, 255, 255);
-    drawText(String(st.level), 945, ty, 255, 255, 255);
-    drawText(String(st.sc), 1020, ty, st.sc === "Y" ? 80 : 255, 255, st.sc === "Y" ? 120 : 255);
+    drawText(allianceLabel, 240, ty, 200, 220, 255);
+    drawText(String(p.nation || "-").slice(0, 15), 410, ty, 230, 230, 230);
+    drawText(String(p.vps), 590, ty, 255, 255, 255);
+    drawText(p.team > 0 ? ("T" + p.team) : "-", 655, ty, 200, 200, 200);
+    drawText(String(st.kd), 730, ty, 255, 255, 255);
+    drawText(String(st.winPct), 815, ty, 255, 255, 255);
+    drawText(wpLabel, 900, ty, 220, 220, 220);
+    drawText(String(st.level), 995, ty, 255, 255, 255);
+    drawText(String(st.sc), 1065, ty, st.sc === "Y" ? 80 : 255, 255, st.sc === "Y" ? 120 : 255);
+    drawText(p.siteUserID > 0 ? String(p.siteUserID) : "-", 1125, ty, 170, 170, 170);
   }
 
   const cs = new CompressionStream("deflate");
@@ -597,23 +689,25 @@ async function fetchAndRespond(appId, token, gameId, env) {
       const fromBatch = fetchedStats.get(p.siteUserID);
       const fromInline = p.inlineEntry;
       combinedStats.set(p.siteUserID, {
-        kd: fromBatch && fromBatch.kd !== "0.00" ? fromBatch.kd : fromInline.kd,
-        winPct: fromBatch && fromBatch.winPct !== "0%" ? fromBatch.winPct : fromInline.winPct,
+        kd: fromBatch && fromBatch.kd !== "-" ? fromBatch.kd : fromInline.kd,
+        winPct: fromBatch && fromBatch.winPct !== "-" ? fromBatch.winPct : fromInline.winPct,
         level: fromBatch && fromBatch.level !== "-" ? fromBatch.level : fromInline.level,
         sc: fromBatch?.sc === "Y" || fromInline?.sc === "Y" ? "Y" : "N",
+        played: fromBatch?.played || fromInline?.played || 0,
+        won: fromBatch?.won || fromInline?.won || 0,
         alliance: p.alliance || fromBatch?.alliance || fromInline?.alliance || ""
       });
     }
 
-    const authStatus =
-      session && session.siteUserID ? "AUTH:OK" : "AUTH:" + (session?.error || "FAIL");
+    const authPart = session && session.siteUserID ? "AUTH:OK" : "AUTH:" + (session?.error || "FAIL");
+    const statusInfo = authPart + " | STATS:" + fetchedStats.size + "/" + uids.length;
 
     const pngBytes = await buildBlackLobbyPng(
       gameId,
       found.serverNum,
       players,
       combinedStats,
-      authStatus
+      statusInfo
     );
     await sendDiscordImage(
       appId,
@@ -627,7 +721,6 @@ async function fetchAndRespond(appId, token, gameId, env) {
     } catch (e) {}
   }
 }
-
 export default {
   async fetch(request, env, ctx) {
     if (request.method !== "POST") {
@@ -637,7 +730,10 @@ export default {
     if (!(await verifyDiscordSignature(request, bodyText))) {
       return new Response("Invalid request signature", { status: 401 });
     }
-    const interaction = JSON.parse(bodyText);
+    const interaction = safeJsonParse(bodyText);
+    if (!interaction) {
+      return new Response("Invalid JSON payload", { status: 400 });
+    }
     if (interaction.type === 1) {
       return new Response(JSON.stringify({ type: 1 }), {
         headers: { "Content-Type": "application/json" }
