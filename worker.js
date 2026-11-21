@@ -1,6 +1,8 @@
 const PUBLIC_KEY = "d4b2c5584aab9b59d22fcedfe90d62bbfc748e963613516db18212d40a1e32b6";
 const DEFAULT_CON_USER = "Blyatforceone";
 const DEFAULT_CON_PASS = "12345Qwerty.";
+const DEFAULT_CON_UID = "105695234";
+const DEFAULT_CON_AUTH = "95e72c7edf919cdc7dcf487a23e12ca4";
 
 function hexToBytes(hex) {
   const clean = String(hex || "").trim();
@@ -117,12 +119,18 @@ function extractSessionFromText(text, cookieHeader = "") {
   }
   return null;
 }
-
 async function loginBytro(env) {
-  const envUid = Number(String(env?.CON_UID || env?.CON_SITE_USER_ID || "").trim() || 0);
-  const envAuth = String(env?.CON_AUTH || env?.CON_USER_AUTH || env?.CON_UBER_AUTH || "").trim();
-  if (envUid > 0 && envAuth) {
-    return { siteUserID: envUid, userAuth: envAuth, version: 420, source: "ENV" };
+  const hasEnvUid = Boolean(String(env?.CON_UID || env?.CON_SITE_USER_ID || "").trim());
+  const hasEnvAuth = Boolean(String(env?.CON_AUTH || env?.CON_USER_AUTH || env?.CON_UBER_AUTH || "").trim());
+  const uid = Number(String(env?.CON_UID || env?.CON_SITE_USER_ID || DEFAULT_CON_UID).trim() || 0);
+  const auth = String(env?.CON_AUTH || env?.CON_USER_AUTH || env?.CON_UBER_AUTH || DEFAULT_CON_AUTH).trim();
+  if (uid > 0 && auth) {
+    return {
+      siteUserID: uid,
+      userAuth: auth,
+      version: 420,
+      source: hasEnvUid && hasEnvAuth ? "ENV" : "CODE_DEFAULT"
+    };
   }
 
   const user = String(env?.CON_USER || DEFAULT_CON_USER).trim();
@@ -802,6 +810,7 @@ async function fetchAndRespond(appId, token, gameId, env) {
     } catch (e) {}
   }
 }
+
 export default {
   async fetch(request, env, ctx) {
     if (request.method !== "POST") {
@@ -839,6 +848,7 @@ export default {
     return new Response("Unknown command", { status: 400 });
   }
 };
+
 
 
 
