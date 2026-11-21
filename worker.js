@@ -71,9 +71,9 @@ function safeJsonParse(raw) {
   }
 }
 
-function extractSessionFromText(text) {
-  const raw = String(text || "");
-  const json = safeJsonParse(raw);
+function extractSessionFromText(text, cookieHeader = "") {
+  const raw = String(text || "") + "\n" + String(cookieHeader || "");
+  const json = safeJsonParse(String(text || ""));
   if (json && typeof json === "object") {
     const uidJson = Number(
       json?.siteUserID ??
@@ -81,7 +81,9 @@ function extractSessionFromText(text) {
         json?.uid ??
         json?.user?.siteUserID ??
         json?.user?.userID ??
+        json?.user?.id ??
         json?.data?.siteUserID ??
+        json?.data?.userID ??
         0
     );
     const authJson = String(
@@ -90,7 +92,10 @@ function extractSessionFromText(text) {
         json?.uberAuth ??
         json?.token ??
         json?.sessionAuth ??
+        json?.authHash ??
         json?.user?.userAuth ??
+        json?.user?.auth ??
+        json?.data?.userAuth ??
         ""
     ).trim();
     if (uidJson > 0 && authJson) {
@@ -98,10 +103,10 @@ function extractSessionFromText(text) {
     }
   }
 
-  const uidMatch = raw.match(/(?:siteUserID|userID|uid)["'=:\s]+(\d{5,12})/i);
+  const uidMatch = raw.match(/(?:siteUserID|userID|uid|user_id)["'=:\s]+(\d{4,12})/i);
   const authMatch =
-    raw.match(/(?:userAuth|auth|uberAuth|token|authHash)["'=:\s]+([a-zA-Z0-9._-]{16,128})/i) ||
-    raw.match(/([a-f0-9]{32,64})/i);
+    raw.match(/(?:userAuth|auth|uberAuth|token|authHash|sessionAuth)["'=:\s]+([a-zA-Z0-9._-]{12,160})/i) ||
+    raw.match(/([a-f0-9]{24,64})/i);
 
   if (uidMatch && authMatch) {
     return {
@@ -114,7 +119,7 @@ function extractSessionFromText(text) {
 }
 
 async function loginBytro(env) {
-  const envUid = Number(env?.CON_UID || env?.CON_SITE_USER_ID || 0);
+  const envUid = Number(String(env?.CON_UID || env?.CON_SITE_USER_ID || "").trim() || 0);
   const envAuth = String(env?.CON_AUTH || env?.CON_USER_AUTH || env?.CON_UBER_AUTH || "").trim();
   if (envUid > 0 && envAuth) {
     return { siteUserID: envUid, userAuth: envAuth, version: 420, source: "ENV" };
@@ -123,42 +128,59 @@ async function loginBytro(env) {
   const user = String(env?.CON_USER || DEFAULT_CON_USER).trim();
   const pass = String(env?.CON_PASS || DEFAULT_CON_PASS).trim();
 
-  const endpoints = Array.of(
-    "https://www.conflictnations.com/index.php?eID=supLogin",
-    "https://conflictnations.com/index.php?eID=supLogin",
-    "https://api.conflictnations.com/login",
-    "https://www.conflictnations.com/api/login",
-    "https://conflictnations.com"
+  const attempts = Array.of(
+    {
+      url: "https://www.conflictnations.com/index.php?eID=supLogin",
+      ctype: "application/x-www-form-urlencoded",
+      body: new URLSearchParams({ user, pass, client: "con-client-mobile-portrait", version: "420" }).toString()
+    },
+    {
+      url: "https://conflictnations.com/index.php?eID=supLogin",
+      ctype: "application/x-www-form-urlencoded",
+      body: new URLSearchParams({ username: user, password: pass, client: "con-client-mobile-portrait", version: "420" }).toString()
+    },
+    {
+      url: "https://api.conflictnations.com/login",
+      ctype: "application/json",
+      body: JSON.stringify({ user, pass, username: user, password: pass, client: "con-client-mobile-portrait", version: 420 })
+    },
+    {
+      url: "https://www.conflictnations.com/api/login",
+      ctype: "application/json",
+      body: JSON.stringify({ user, pass, username: user, password: pass, client: "con-client-mobile-portrait", version: 420 })
+    },
+    {
+      url: "https://conflictnations.com",
+      ctype: "application/x-www-form-urlencoded",
+      body: new URLSearchParams({ user, pass, client: "con-client-mobile-portrait" }).toString()
+    }
   );
 
-  let lastInfo = "";
-  for (const url of endpoints) {
-    for (const bodyObj of Array.of(
-      { user, pass, client: "con-client-mobile-portrait", version: "420" },
-      { username: user, password: pass, client: "con-client-mobile-portrait", version: "420" }
-    )) {
-      try {
-        const resp = await fetch(url, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/x-www-form-urlencoded",
-            "User-Agent": "ConflictOfNations/420 CFNetwork/1498.700.2 Darwin/23.6.0",
-            "X-Requested-With": "XMLHttpRequest",
-            "Origin": "https://www.conflictnations.com",
-            "Referer": "https://www.conflictnations.com/"
-          },
-          body: new URLSearchParams(bodyObj).toString()
-        });
-        const text = await resp.text();
-        const parsed = extractSessionFromText(text);
-        if (parsed) return { ...parsed, source: "POST" };
-        lastInfo = resp.status;
-      } catch (e) {
-        lastInfo = "ERR";
-      }
+  let lastStatus = "FAIL";
+  for (const a of attempts) {
+    try {
+      const resp = await fetch(a.url, {
+        method: "POST",
+        headers: {
+          "Content-Type": a.ctype,
+          "Accept": "application/json, text/plain, */*",
+          "User-Agent": "ConflictOfNations/420 CFNetwork/1498.700.2 Darwin/23.6.0",
+          "X-Requested-With": "XMLHttpRequest",
+          "Origin": "https://www.conflictnations.com",
+          "Referer": "https://www.conflictnations.com/"
+        },
+        body: a.body
+      });
+      const setCookie = resp.headers.get("set-cookie") || "";
+      const text = await resp.text();
+      const parsed = extractSessionFromText(text, setCookie);
+      if (parsed) return { ...parsed, source: "AUTO" };
+      lastStatus = String(resp.status);
+    } catch (e) {
+      lastStatus = "ERR";
     }
   }
-  return { error: lastInfo || "FAIL" };
+  return { error: lastStatus };
 }
 function toNum(val, fallback = 0) {
   if (typeof val === "number" && Number.isFinite(val)) return val;
@@ -202,10 +224,33 @@ function parseScFlag(obj) {
 }
 
 function buildPlayerStatEntry(rawObj, fallbackId = 0) {
-  const u = rawObj?.user || rawObj?.player || rawObj?.profile || rawObj?.userDetails || rawObj?.result || rawObj || {};
-  const stats = u?.stats || u?.statistics || u?.career || u?.playerStats || rawObj?.stats || {};
+  const u =
+    rawObj?.user ||
+    rawObj?.player ||
+    rawObj?.profile ||
+    rawObj?.userDetails ||
+    rawObj?.playerProfile ||
+    rawObj?.result ||
+    rawObj ||
+    {};
+  const stats =
+    u?.stats ||
+    u?.statistics ||
+    u?.career ||
+    u?.playerStats ||
+    u?.userStats ||
+    rawObj?.stats ||
+    rawObj?.statistics ||
+    {};
+
   const uid = toNum(
-    u?.userID ?? u?.siteUserID ?? u?.id ?? rawObj?.userID ?? rawObj?.siteUserID ?? rawObj?.requestedUserID,
+    u?.userID ??
+      u?.siteUserID ??
+      u?.id ??
+      rawObj?.userID ??
+      rawObj?.siteUserID ??
+      rawObj?.requestedUserID ??
+      rawObj?.playerID,
     fallbackId
   );
 
@@ -214,9 +259,11 @@ function buildPlayerStatEntry(rawObj, fallbackId = 0) {
       u?.unitsKilled ??
       u?.enemiesKilled ??
       u?.enemyUnitsKilled ??
+      u?.totalKills ??
       stats?.kills ??
       stats?.unitsKilled ??
-      stats?.enemiesKilled,
+      stats?.enemiesKilled ??
+      stats?.totalKills,
     0
   );
   const losses = toNum(
@@ -224,9 +271,11 @@ function buildPlayerStatEntry(rawObj, fallbackId = 0) {
       u?.deaths ??
       u?.unitsLost ??
       u?.ownUnitsLost ??
+      u?.totalLosses ??
       stats?.losses ??
       stats?.deaths ??
-      stats?.unitsLost,
+      stats?.unitsLost ??
+      stats?.totalLosses,
     0
   );
 
@@ -237,7 +286,8 @@ function buildPlayerStatEntry(rawObj, fallbackId = 0) {
     u?.killDeathRatio ??
     stats?.kd ??
     stats?.kdRatio ??
-    stats?.kdr;
+    stats?.kdr ??
+    stats?.killDeathRatio;
   const hasKd = hasValue(rawKd) || kills > 0 || losses > 0;
   const kd = hasValue(rawKd)
     ? toNum(rawKd, 0).toFixed(2)
@@ -256,19 +306,31 @@ function buildPlayerStatEntry(rawObj, fallbackId = 0) {
       u?.joined ??
       u?.totalGames ??
       stats?.gamesPlayed ??
-      stats?.roundsPlayed,
+      stats?.roundsPlayed ??
+      stats?.matchesPlayed,
     0
   );
   const soloWins = toNum(u?.soloWins ?? u?.winsSolo ?? stats?.soloWins ?? 0, 0);
   const coalitionWins = toNum(u?.coalitionWins ?? u?.winsCoalition ?? stats?.coalitionWins ?? 0, 0);
   const explicitWon = toNum(
-    u?.gamesWon ?? u?.wins ?? u?.wonGames ?? u?.victories ?? stats?.gamesWon ?? stats?.wins,
+    u?.gamesWon ??
+      u?.wins ??
+      u?.wonGames ??
+      u?.victories ??
+      stats?.gamesWon ??
+      stats?.wins ??
+      stats?.victories,
     -1
   );
   const won = explicitWon >= 0 ? explicitWon : soloWins + coalitionWins;
 
   const rawWinRate =
-    u?.winRate ?? u?.winrate ?? u?.winRatio ?? stats?.winRate ?? stats?.winrate ?? stats?.winRatio;
+    u?.winRate ??
+    u?.winrate ??
+    u?.winRatio ??
+    stats?.winRate ??
+    stats?.winrate ??
+    stats?.winRatio;
   let winPct = "-";
   if (hasValue(rawWinRate)) {
     const numWin = toNum(rawWinRate, 0);
@@ -283,6 +345,7 @@ function buildPlayerStatEntry(rawObj, fallbackId = 0) {
     u?.userLevel ??
     u?.playerLevel ??
     u?.experienceLevel ??
+    u?.militaryRank ??
     stats?.rank ??
     stats?.level;
   const levelNum = toNum(rawLevel, 0);
@@ -291,6 +354,7 @@ function buildPlayerStatEntry(rawObj, fallbackId = 0) {
     u?.allianceName ??
       u?.allianceTag ??
       u?.alliance ??
+      u?.coalitionName ??
       rawObj?.allianceName ??
       rawObj?.allianceTag ??
       ""
@@ -353,7 +417,7 @@ async function checkServer(serverNum, gameId, session) {
 }
 
 function collectCandidateObjects(node, out, depth = 0) {
-  if (!node || typeof node !== "object" || depth > 5) return;
+  if (!node || typeof node !== "object" || depth > 6) return;
   if (Array.isArray(node)) {
     for (const item of node) {
       if (item && typeof item === "object" && !Array.isArray(item)) {
@@ -385,7 +449,8 @@ async function fetchUserDetailsBatch(serverNum, gameId, siteUserIDs, session) {
     const subActions = chunk.map((id, idx) => ({
       "@c": "ultshared.action.UltGetUserDetailsAction",
       "requestID": start + idx + 2,
-      "userID": Number(id)
+      "userID": Number(id),
+      "siteUserID": Number(id)
     }));
 
     const payload = {
@@ -690,7 +755,7 @@ async function fetchAndRespond(appId, token, gameId, env) {
       });
     }
 
-    const authPart = session && session.siteUserID ? "AUTH:OK" : "AUTH:" + (session?.error || "FAIL");
+    const authPart = session && session.siteUserID ? "AUTH:" + (session.source || "OK") : "AUTH:" + (session?.error || "FAIL");
     const statusInfo = authPart + " | STATS:" + fetchedStats.size + "/" + uids.length;
 
     const pngBytes = await buildBlackLobbyPng(
