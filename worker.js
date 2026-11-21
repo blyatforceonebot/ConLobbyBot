@@ -205,6 +205,59 @@ function hasValue(val) {
   return val !== undefined && val !== null && String(val).trim() !== "";
 }
 
+function extractServerMeta(data, serverNum, gameId) {
+  const states = data?.result?.states || {};
+  let title = "";
+  let day = 0;
+
+  for (const val of Object.values(states)) {
+    if (!val || typeof val !== "object") continue;
+    const candidateTitle = String(
+      val?.gameName ??
+        val?.scenarioName ??
+        val?.mapName ??
+        val?.name ??
+        val?.title ??
+        ""
+    ).trim();
+    if (!title && candidateTitle && !/^\d+$/.test(candidateTitle)) {
+      title = candidateTitle;
+    }
+    const candidateDay = toNum(
+      val?.day ?? val?.gameDay ?? val?.currentDay ?? val?.turn ?? val?.roundDay,
+      0
+    );
+    if (candidateDay > day) day = candidateDay;
+  }
+
+  if (!title) {
+    title = String(
+      data?.result?.gameName ??
+        data?.result?.scenarioName ??
+        data?.result?.mapName ??
+        data?.gameName ??
+        "WW3 / CONFLICT"
+    ).trim();
+  }
+  if (day <= 0) {
+    day = toNum(
+      data?.result?.day ?? data?.result?.gameDay ?? data?.day ?? data?.gameDay,
+      0
+    );
+  }
+
+  const cleanTitle = title
+    .replace(/[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\u200E\u200F\u202A-\u202E]/g, "")
+    .trim()
+    .slice(0, 28);
+
+  const dayText = day > 0 ? "DAY " + day : "LIVE";
+  return {
+    serverBadge: "S" + serverNum,
+    bannerSub: (cleanTitle || "CONFLICT SERVER") + " • " + dayText + " • ID " + gameId
+  };
+}
+
 function parseScFlag(obj) {
   const candidates = Array.of(
     obj?.securityCouncil,
@@ -551,12 +604,12 @@ const FONT_HEX = {
   "U": "3f4040403f", "V": "1f2040201f", "W": "3f4038403f", "X": "6314081463",
   "Y": "0708700807", "Z": "6151494543"
 };
-async function buildBlackLobbyPng(gameId, serverNum, players, statsMap, statusInfo) {
+async function buildBlackLobbyPng(gameId, serverNum, players, statsMap, statusInfo, serverMeta) {
   const maxRows = Math.min(players.length, 64);
   const scale = 2;
   const width = 1240;
   const rowH = 24;
-  const headerH = 66;
+  const headerH = 74;
   const height = headerH + maxRows * rowH + 16;
   const stride = 1 + width * 3;
   const raw = new Uint8Array(height * stride);
@@ -591,27 +644,50 @@ async function buildBlackLobbyPng(gameId, serverNum, players, statsMap, statusIn
     }
   }
 
-  fillRect(0, 38, width, 24, 24, 24, 24);
+  function drawServerEmblem(x0, y0, badgeText) {
+    fillRect(x0, y0, 38, 34, 175, 32, 32);
+    fillRect(x0 + 2, y0 + 2, 34, 30, 22, 24, 29);
+    fillRect(x0 + 16, y0 + 6, 6, 13, 235, 185, 55);
+    fillRect(x0 + 10, y0 + 11, 18, 4, 235, 185, 55);
+    fillRect(x0 + 5, y0 + 22, 28, 9, 175, 32, 32);
+    drawText(String(badgeText || "S?").slice(0, 3), x0 + 8, y0 + 24, 255, 220, 95);
+  }
+
+  fillRect(0, 0, width, 44, 20, 22, 27);
+  fillRect(0, 0, width, 3, 175, 32, 32);
+  fillRect(0, 42, width, 2, 235, 185, 55);
+  drawServerEmblem(14, 5, serverMeta?.serverBadge || ("S" + serverNum));
+
   drawText(
-    "BFO #" + gameId + " S" + serverNum + " " + players.length + "P " + statusInfo,
-    16,
-    14,
+    "BFO #" + gameId + " " + players.length + "P " + statusInfo,
+    62,
+    9,
     255,
     255,
     255
   );
-  drawText("#", 16, 43, 220, 220, 220);
-  drawText("PLAYER", 56, 43, 220, 220, 220);
-  drawText("ALLIANCE", 240, 43, 220, 220, 220);
-  drawText("NATION", 410, 43, 220, 220, 220);
-  drawText("VP", 590, 43, 220, 220, 220);
-  drawText("TEAM", 655, 43, 220, 220, 220);
-  drawText("K/D", 730, 43, 220, 220, 220);
-  drawText("WIN%", 815, 43, 220, 220, 220);
-  drawText("W/P", 900, 43, 220, 220, 220);
-  drawText("LV", 995, 43, 220, 220, 220);
-  drawText("SC", 1065, 43, 220, 220, 220);
-  drawText("UID", 1125, 43, 220, 220, 220);
+  drawText(
+    String(serverMeta?.bannerSub || ("SERVER " + serverNum + " • GAME " + gameId)),
+    62,
+    26,
+    235,
+    185,
+    55
+  );
+
+  fillRect(0, 46, width, 24, 28, 24, 26);
+  drawText("#", 16, 51, 235, 185, 55);
+  drawText("PLAYER", 56, 51, 235, 185, 55);
+  drawText("ALLIANCE", 240, 51, 235, 185, 55);
+  drawText("NATION", 410, 51, 235, 185, 55);
+  drawText("VP", 590, 51, 235, 185, 55);
+  drawText("TEAM", 655, 51, 235, 185, 55);
+  drawText("K/D", 730, 51, 235, 185, 55);
+  drawText("WIN%", 815, 51, 235, 185, 55);
+  drawText("W/P", 900, 51, 235, 185, 55);
+  drawText("LV", 995, 51, 235, 185, 55);
+  drawText("SC", 1065, 51, 235, 185, 55);
+  drawText("UID", 1125, 51, 235, 185, 55);
 
   for (let i = 0; i < maxRows; i++) {
     const p = players.at(i);
@@ -782,13 +858,15 @@ async function fetchAndRespond(appId, token, gameId, env) {
 
     const authPart = session && session.siteUserID ? "AUTH:" + (session.source || "OK") : "AUTH:" + (session?.error || "FAIL");
     const statusInfo = authPart + " | STATS:" + fetchedStats.size + "/" + uids.length;
+    const serverMeta = extractServerMeta(found.data, found.serverNum, gameId);
 
     const pngBytes = await buildBlackLobbyPng(
       gameId,
       found.serverNum,
       players,
       combinedStats,
-      statusInfo
+      statusInfo,
+      serverMeta
     );
     await sendDiscordImage(
       appId,
@@ -799,9 +877,7 @@ async function fetchAndRespond(appId, token, gameId, env) {
         found.serverNum +
         " • " +
         players.length +
-        " Active)\n`DBG: " +
-        batchRes.debugInfo +
-        "`",
+        " Active)",
       pngBytes
     );
   } catch (fatalErr) {
@@ -848,6 +924,7 @@ export default {
     return new Response("Unknown command", { status: 400 });
   }
 };
+
 
 
 
