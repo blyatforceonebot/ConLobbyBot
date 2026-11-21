@@ -117,54 +117,48 @@ async function loginBytro(env) {
   const envUid = Number(env?.CON_UID || env?.CON_SITE_USER_ID || 0);
   const envAuth = String(env?.CON_AUTH || env?.CON_USER_AUTH || env?.CON_UBER_AUTH || "").trim();
   if (envUid > 0 && envAuth) {
-    return { siteUserID: envUid, userAuth: envAuth, version: 420 };
+    return { siteUserID: envUid, userAuth: envAuth, version: 420, source: "ENV" };
   }
 
-  const user = env?.CON_USER || DEFAULT_CON_USER;
-  const pass = env?.CON_PASS || DEFAULT_CON_PASS;
+  const user = String(env?.CON_USER || DEFAULT_CON_USER).trim();
+  const pass = String(env?.CON_PASS || DEFAULT_CON_PASS).trim();
 
-  const attempts = Array.of(
-    {
-      url: "https://www.conflictnations.com/index.php?eID=supLogin",
-      body: new URLSearchParams({ user, pass, client: "con-client-mobile-portrait", version: "420" }).toString()
-    },
-    {
-      url: "https://conflictnations.com/index.php?eID=supLogin",
-      body: new URLSearchParams({ username: user, password: pass, client: "con-client-mobile-portrait", version: "420" }).toString()
-    },
-    {
-      url: "https://conflictnations.com",
-      body: new URLSearchParams({ user, pass, client: "con-client-mobile-portrait", version: "420" }).toString()
-    },
-    {
-      url: "https://conflictnations.com",
-      body: new URLSearchParams({ username: user, password: pass, client: "con-client-mobile-portrait" }).toString()
-    }
+  const endpoints = Array.of(
+    "https://www.conflictnations.com/index.php?eID=supLogin",
+    "https://conflictnations.com/index.php?eID=supLogin",
+    "https://api.conflictnations.com/login",
+    "https://www.conflictnations.com/api/login",
+    "https://conflictnations.com"
   );
 
-  let info = "";
-  for (const a of attempts) {
-    try {
-      const resp = await fetch(a.url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-          "User-Agent": "ConflictOfNations/420 CFNetwork/1498.700.2 Darwin/23.6.0",
-          "X-Requested-With": "XMLHttpRequest",
-          "Origin": "https://www.conflictnations.com",
-          "Referer": "https://www.conflictnations.com/"
-        },
-        body: a.body
-      });
-      const text = await resp.text();
-      const parsed = extractSessionFromText(text);
-      if (parsed) return parsed;
-      info += resp.status + ":" + text.replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim().slice(0, 14) + "|";
-    } catch (e) {
-      info += "ERR|";
+  let lastInfo = "";
+  for (const url of endpoints) {
+    for (const bodyObj of Array.of(
+      { user, pass, client: "con-client-mobile-portrait", version: "420" },
+      { username: user, password: pass, client: "con-client-mobile-portrait", version: "420" }
+    )) {
+      try {
+        const resp = await fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": "ConflictOfNations/420 CFNetwork/1498.700.2 Darwin/23.6.0",
+            "X-Requested-With": "XMLHttpRequest",
+            "Origin": "https://www.conflictnations.com",
+            "Referer": "https://www.conflictnations.com/"
+          },
+          body: new URLSearchParams(bodyObj).toString()
+        });
+        const text = await resp.text();
+        const parsed = extractSessionFromText(text);
+        if (parsed) return { ...parsed, source: "POST" };
+        lastInfo = resp.status;
+      } catch (e) {
+        lastInfo = "ERR";
+      }
     }
   }
-  return { error: info.slice(0, 42) || "FAIL" };
+  return { error: lastInfo || "FAIL" };
 }
 function toNum(val, fallback = 0) {
   if (typeof val === "number" && Number.isFinite(val)) return val;
@@ -379,19 +373,19 @@ function collectCandidateObjects(node, out, depth = 0) {
 
 async function fetchUserDetailsBatch(serverNum, gameId, siteUserIDs, session) {
   const statsMap = new Map();
-  if (!session || !session.siteUserID || !Array.isArray(siteUserIDs) || siteUserIDs.length === 0) {
-    return statsMap;
-  }
+  if (!Array.isArray(siteUserIDs) || siteUserIDs.length === 0) return statsMap;
 
+  const uid = session && session.siteUserID ? Number(session.siteUserID) : 0;
+  const auth = session && session.userAuth ? String(session.userAuth) : "";
   const url = new URL("/", "https://congs" + serverNum + ".c.bytro.com").toString();
   const chunkSize = 15;
 
   for (let start = 0; start < siteUserIDs.length; start += chunkSize) {
     const chunk = siteUserIDs.slice(start, start + chunkSize);
-    const subActions = chunk.map((uid, idx) => ({
+    const subActions = chunk.map((id, idx) => ({
       "@c": "ultshared.action.UltGetUserDetailsAction",
       "requestID": start + idx + 2,
-      "userID": Number(uid)
+      "userID": Number(id)
     }));
 
     const payload = {
@@ -402,14 +396,14 @@ async function fetchUserDetailsBatch(serverNum, gameId, siteUserIDs, session) {
       "actions": Array.of("java.util.LinkedList", subActions),
       "stateIDs": null,
       "tstamps": null,
-      "version": session.version,
+      "version": session?.version || 420,
       "client": "con-client-mobile-portrait",
-      "siteUserID": session.siteUserID,
+      "siteUserID": uid,
       "adminLevel": 0,
       "gameID": Number(gameId),
       "playerID": 0,
       "rights": "chat",
-      "userAuth": session.userAuth,
+      "userAuth": auth,
       "tstamp": String(Math.floor(Date.now() / 1000))
     };
 
@@ -424,8 +418,7 @@ async function fetchUserDetailsBatch(serverNum, gameId, siteUserIDs, session) {
         body: JSON.stringify(payload)
       });
       if (!resp.ok) continue;
-      const text = await resp.text();
-      const data = safeJsonParse(text);
+      const data = safeJsonParse(await resp.text());
       if (!data) continue;
 
       const candidates = new Array();
@@ -443,8 +436,6 @@ async function fetchUserDetailsBatch(serverNum, gameId, siteUserIDs, session) {
             sc: entry.sc === "Y" || prev?.sc === "Y" ? "Y" : "N",
             played: entry.played || prev?.played || 0,
             won: entry.won || prev?.won || 0,
-            kills: entry.kills || prev?.kills || 0,
-            losses: entry.losses || prev?.losses || 0,
             alliance: entry.alliance || prev?.alliance || ""
           });
         }
@@ -513,7 +504,7 @@ async function buildBlackLobbyPng(gameId, serverNum, players, statsMap, statusIn
 
   fillRect(0, 38, width, 24, 24, 24, 24);
   drawText(
-    "BLYATFORCEONE - LOBBY #" + gameId + " (S" + serverNum + " | " + players.length + " ACTIVE | " + statusInfo + ")",
+    "BFO #" + gameId + " S" + serverNum + " " + players.length + "P " + statusInfo,
     16,
     14,
     255,
@@ -758,6 +749,7 @@ export default {
     return new Response("Unknown command", { status: 400 });
   }
 };
+
 
 
 
