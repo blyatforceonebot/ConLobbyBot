@@ -142,12 +142,12 @@ async function loginBytro(env) {
     {
       url: "https://api.conflictnations.com/login",
       ctype: "application/json",
-      body: JSON.stringify({ user, pass, username: user, password: pass, client: "con-client-mobile-portrait", version: 420 })
+      body: JSON.stringify({ user, pass, username: user, password: pass, client: "con-client-mobile-portrait", version: "420" })
     },
     {
       url: "https://www.conflictnations.com/api/login",
       ctype: "application/json",
-      body: JSON.stringify({ user, pass, username: user, password: pass, client: "con-client-mobile-portrait", version: 420 })
+      body: JSON.stringify({ user, pass, username: user, password: pass, client: "con-client-mobile-portrait", version: "420" })
     },
     {
       url: "https://conflictnations.com",
@@ -437,7 +437,10 @@ function collectCandidateObjects(node, out, depth = 0) {
 
 async function fetchUserDetailsBatch(serverNum, gameId, siteUserIDs, session) {
   const statsMap = new Map();
-  if (!Array.isArray(siteUserIDs) || siteUserIDs.length === 0) return statsMap;
+  let debugInfo = "no-uids";
+  if (!Array.isArray(siteUserIDs) || siteUserIDs.length === 0) {
+    return { statsMap, debugInfo };
+  }
 
   const uid = session && session.siteUserID ? Number(session.siteUserID) : 0;
   const auth = session && session.userAuth ? String(session.userAuth) : "";
@@ -482,8 +485,19 @@ async function fetchUserDetailsBatch(serverNum, gameId, siteUserIDs, session) {
         },
         body: JSON.stringify(payload)
       });
+      const rawText = await resp.text();
+      if (start === 0) {
+        const parsedDbg = safeJsonParse(rawText);
+        const topKeys = parsedDbg && typeof parsedDbg === "object" ? Object.keys(parsedDbg).join(",") : "non-json";
+        const resKeys =
+          parsedDbg?.result && typeof parsedDbg.result === "object"
+            ? Object.keys(parsedDbg.result).join(",")
+            : "";
+        const cleanPreview = rawText.replace(/\s+/g, " ").slice(0, 120);
+        debugInfo = "st=" + resp.status + " keys=[" + topKeys + "] res=[" + resKeys + "] txt=" + cleanPreview;
+      }
       if (!resp.ok) continue;
-      const data = safeJsonParse(await resp.text());
+      const data = safeJsonParse(rawText);
       if (!data) continue;
 
       const candidates = new Array();
@@ -505,10 +519,12 @@ async function fetchUserDetailsBatch(serverNum, gameId, siteUserIDs, session) {
           });
         }
       }
-    } catch (e) {}
+    } catch (e) {
+      if (start === 0) debugInfo = "err=" + String(e).slice(0, 80);
+    }
   }
 
-  return statsMap;
+  return { statsMap, debugInfo };
 }
 const FONT_HEX = {
   " ": "0000000000", "!": "00005f0000", "#": "147f147f14", "%": "2313086462",
@@ -737,7 +753,8 @@ async function fetchAndRespond(appId, token, gameId, env) {
     players.sort((a, b) => b.vps - a.vps);
 
     const uids = players.map(p => p.siteUserID).filter(id => id > 0);
-    const fetchedStats = await fetchUserDetailsBatch(found.serverNum, gameId, uids, session);
+    const batchRes = await fetchUserDetailsBatch(found.serverNum, gameId, uids, session);
+    const fetchedStats = batchRes.statsMap;
 
     const combinedStats = new Map();
     for (const p of players) {
@@ -768,7 +785,15 @@ async function fetchAndRespond(appId, token, gameId, env) {
     await sendDiscordImage(
       appId,
       token,
-      "**BlyatForceOne | Lobby " + gameId + "** (Server " + found.serverNum + " • " + players.length + " Active)",
+      "**BlyatForceOne | Lobby " +
+        gameId +
+        "** (Server " +
+        found.serverNum +
+        " • " +
+        players.length +
+        " Active)\n`DBG: " +
+        batchRes.debugInfo +
+        "`",
       pngBytes
     );
   } catch (fatalErr) {
@@ -814,6 +839,7 @@ export default {
     return new Response("Unknown command", { status: 400 });
   }
 };
+
 
 
 
